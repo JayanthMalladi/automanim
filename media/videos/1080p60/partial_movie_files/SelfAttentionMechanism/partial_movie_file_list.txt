@@ -1,0 +1,5 @@
+# This file is used internally by FFMPEG.
+file 'file:D:/autoManim/media/videos/1080p60/partial_movie_files/SelfAttentionMechanism/3977891868_3003910008_223132457.mp4'
+file 'file:D:/autoManim/media/videos/1080p60/partial_movie_files/SelfAttentionMechanism/2852726489_2331115163_158005212.mp4'
+file 'file:D:/autoManim/media/videos/1080p60/partial_movie_files/SelfAttentionMechanism/2852726489_911791214_3878227424.mp4'
+file 'file:D:/autoManim/media/videos/1080p60/partial_movie_files/SelfAttentionMechanism/2852726489_4247107814_3226477397.mp4'
