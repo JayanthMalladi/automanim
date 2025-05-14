@@ -3,7 +3,7 @@ services:
     name: automanim-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --timeout 120
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false

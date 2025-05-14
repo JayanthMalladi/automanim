@@ -3,6 +3,6 @@ flask-cors==4.0.0
 python-dotenv==1.0.0
 gunicorn==21.2.0
 openai>=1.6.1,<2.0.0
-langchain==0.0.267
-langchain-openai==0.0.2
+langchain>=0.1.0
+langchain-openai>=0.0.2
 requests==2.31.0

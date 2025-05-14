@@ -1,9 +1,10 @@
 import langchain
 from openai import OpenAI
-from langchain_openai import ChatOpenAI  # Updated import
+from langchain_openai.chat_models.base import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+from langchain.chains import LLMChain
 import os
 from dotenv import load_dotenv
 
@@ -14,20 +15,6 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-prover-v2:free")
-
-# Global LLM instance
-_llm_instance = None
-
-def get_llm():
-    """Lazy-load the LLM instance only when needed"""
-    global _llm_instance
-    if _llm_instance is None:
-        _llm_instance = ChatOpenAI(
-            openai_api_key=OPENROUTER_API_KEY,
-            openai_api_base=OPENROUTER_API_BASE,
-            model_name=DEFAULT_MODEL
-        )
-    return _llm_instance
 
 def generate_manim_code(prompt):
     try:
@@ -83,15 +70,14 @@ Follow these instructions meticulously to ensure your Manim code is syntacticall
         human_message = HumanMessagePromptTemplate.from_template(human_template)
         chat_prompt = ChatPromptTemplate.from_messages([systemMessage, human_message])
 
-        # Use the lazily loaded LLM
-        llm = get_llm()
+        llm = ChatOpenAI(
+            openai_api_key=OPENROUTER_API_KEY,
+            openai_api_base=OPENROUTER_API_BASE,
+            model_name=DEFAULT_MODEL
+        )
 
         llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"question": prompt})
-
-        # Extract the text from the response object
-        if isinstance(response, dict) and "text" in response:
-            response = response["text"]
+        response = llm_chain.run({"question": prompt})
 
         # Optionally, strip markdown code block markers
         if response.startswith("```python"):
@@ -140,19 +126,14 @@ As an assistant specializing in creating Manim 2D math animation code, your role
         human_message = HumanMessagePromptTemplate.from_template(human_template)
 
         chat_prompt = ChatPromptTemplate.from_messages([system_message,human_message])
-        
-        # Use the lazily loaded LLM
-        llm = get_llm()
+        llm = ChatOpenAI(
+            openai_api_key=OPENROUTER_API_KEY,
+            openai_api_base=OPENROUTER_API_BASE,
+            model_name=DEFAULT_MODEL
+        )
 
         llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"prompt": prompt})
-        
-        # Extract the text from the response object
-        if isinstance(response, dict) and "text" in response:
-            improved = response["text"]
-        else:
-            improved = str(response)
-            
+        improved = llm_chain.run({"prompt": prompt})
         return improved.strip()
     except Exception as e:
         print(f"Error in improve_prompt: {str(e)}")
