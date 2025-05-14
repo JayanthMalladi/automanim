@@ -98,7 +98,7 @@ function App() {
     setIsGenerating(true);
 
     try {
-      const response = await fetch('http://localhost:5000/generate', {
+      const response = await fetch('https://automanim-1.onrender.com/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
@@ -125,7 +125,7 @@ function App() {
     
     try {
       console.log("Sending prompt to backend:", prompt);
-      const response = await fetch('http://localhost:5000/improve_prompt', {
+      const response = await fetch('https://automanim-1.onrender.com/improve_prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
