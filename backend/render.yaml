@@ -11,7 +11,7 @@ services:
       - key: OPENROUTER_API_BASE
         value: https://openrouter.ai/api/v1
       - key: DEFAULT_MODEL
-        value: deepseek/deepseek-prover-v2:free 
+        value: qwen/qwen3-235b-a22b:free 
       - key: WEB_CONCURRENCY
         value: 2
       - key: PYTHON_MAX_THREADS

@@ -6,7 +6,9 @@ from langchain.chains import LLMChain
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 import os
 import gc
+import time
 import logging
+import backoff
 from dotenv import load_dotenv
 
 # Setup logging
@@ -18,27 +20,86 @@ load_dotenv()
 # Get API credentials from environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen/qwen3-235b-a22b:free")
+
+# Backup model if the primary model fails
+BACKUP_MODEL = "meta-llama/llama-3-8b-instruct:free"
 
 # Global LLM instance
 _llm_instance = None
+_backup_llm_instance = None
 
-def get_llm():
+# Retry parameters
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # in seconds
+
+def get_llm(use_backup=False):
     """Lazy-load the LLM instance only when needed"""
-    global _llm_instance
-    if _llm_instance is None:
-        try:
-            _llm_instance = ChatOpenAI(
-                openai_api_key=OPENROUTER_API_KEY,
-                openai_api_base=OPENROUTER_API_BASE,
-                model_name=DEFAULT_MODEL,
-                request_timeout=180  # Increase timeout
-            )
-            logger.info("LLM instance created successfully")
-        except Exception as e:
-            logger.error(f"Error creating LLM instance: {str(e)}")
-            raise
-    return _llm_instance
+    global _llm_instance, _backup_llm_instance
+    
+    if use_backup:
+        if _backup_llm_instance is None:
+            try:
+                logger.info(f"Creating backup LLM instance with model {BACKUP_MODEL}")
+                _backup_llm_instance = ChatOpenAI(
+                    openai_api_key=OPENROUTER_API_KEY,
+                    openai_api_base=OPENROUTER_API_BASE,
+                    model_name=BACKUP_MODEL,
+                    request_timeout=180,  # Increase timeout
+                    temperature=0.7
+                )
+                logger.info("Backup LLM instance created successfully")
+            except Exception as e:
+                logger.error(f"Error creating backup LLM instance: {str(e)}")
+                raise
+        return _backup_llm_instance
+    else:
+        if _llm_instance is None:
+            try:
+                logger.info(f"Creating primary LLM instance with model {DEFAULT_MODEL}")
+                _llm_instance = ChatOpenAI(
+                    openai_api_key=OPENROUTER_API_KEY,
+                    openai_api_base=OPENROUTER_API_BASE,
+                    model_name=DEFAULT_MODEL,
+                    request_timeout=180,  # Increase timeout
+                    temperature=0.7
+                )
+                logger.info("Primary LLM instance created successfully")
+            except Exception as e:
+                logger.error(f"Error creating primary LLM instance: {str(e)}")
+                raise
+        return _llm_instance
+
+@backoff.on_exception(backoff.expo, 
+                     (ValueError, Exception), 
+                     max_tries=MAX_RETRIES, 
+                     giveup=lambda e: "Rate limit" not in str(e))
+def safe_generate_with_llm(llm, chat_prompt, payload):
+    """
+    Safely generate responses with built-in retry logic
+    Returns the response or raises an exception after max retries
+    """
+    try:
+        logger.info(f"Attempting to generate with model: {llm.model_name}")
+        llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
+        response = llm_chain.invoke(payload)
+        
+        # Extract the text from the response object
+        if isinstance(response, dict) and "text" in response:
+            result = response["text"]
+            # Clear references
+            response.clear()
+        else:
+            result = str(response)
+            
+        # Clear the chain to help with memory management
+        llm_chain = None
+        
+        return result
+    except Exception as e:
+        logger.warning(f"Error generating with model {llm.model_name}: {str(e)}")
+        # Let backoff handle the retry
+        raise
 
 def generate_manim_code(prompt):
     try:
@@ -123,20 +184,15 @@ Always verify that your code is syntactically correct, handles all edge cases, a
         human_message = HumanMessagePromptTemplate.from_template(human_template)
         chat_prompt = ChatPromptTemplate.from_messages([systemMessage, human_message])
 
-        # Use the lazily loaded LLM
-        llm = get_llm()
-
-        # Create a new chain for each request to avoid memory leaks
-        llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"question": prompt})
-
-        # Extract the text from the response object and clear references
-        if isinstance(response, dict) and "text" in response:
-            result = response["text"]
-            # Clear references
-            response.clear()
-        else:
-            result = str(response)
+        # Try primary model first
+        try:
+            llm = get_llm(use_backup=False)
+            result = safe_generate_with_llm(llm, chat_prompt, {"question": prompt})
+        except Exception as e:
+            logger.warning(f"Primary model failed, trying backup model: {str(e)}")
+            # If primary model fails, try backup model
+            llm = get_llm(use_backup=True)
+            result = safe_generate_with_llm(llm, chat_prompt, {"question": prompt})
 
         # Optionally, strip markdown code block markers
         if result.startswith("```python"):
@@ -146,7 +202,6 @@ Always verify that your code is syntactically correct, handles all edge cases, a
 
         # Force garbage collection to free memory
         chat_prompt = None
-        llm_chain = None
         gc.collect()
         
         logger.info(f"Successfully generated code of length {len(result)}")
@@ -218,24 +273,19 @@ Your goal is to create a prompt so detailed and specific that it eliminates any 
 
         chat_prompt = ChatPromptTemplate.from_messages([system_message, human_message])
         
-        # Use the lazily loaded LLM
-        llm = get_llm()
-
-        # Create a new chain for each request
-        llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"prompt": prompt})
-        
-        # Extract the text from the response object
-        if isinstance(response, dict) and "text" in response:
-            improved = response["text"]
-            # Clear references
-            response.clear()
-        else:
-            improved = str(response)
+        # Try with primary model first
+        try:
+            logger.info("Attempting to improve prompt with primary model")
+            llm = get_llm(use_backup=False)
+            improved = safe_generate_with_llm(llm, chat_prompt, {"prompt": prompt})
+        except Exception as e:
+            logger.warning(f"Primary model failed for improve_prompt, trying backup: {str(e)}")
+            # If primary model fails, try backup model
+            llm = get_llm(use_backup=True)
+            improved = safe_generate_with_llm(llm, chat_prompt, {"prompt": prompt})
             
         # Clear references to help with garbage collection
         chat_prompt = None
-        llm_chain = None
         gc.collect()
         
         logger.info(f"Successfully improved prompt of length {len(improved)}")
@@ -243,4 +293,18 @@ Your goal is to create a prompt so detailed and specific that it eliminates any 
     except Exception as e:
         logger.error(f"Error in improve_prompt: {str(e)}", exc_info=True)
         gc.collect()  # Try to free memory even on failure
-        raise Exception(f"Failed to improve prompt: {str(e)}")
+        
+        # Provide a fallback response that's still useful rather than just failing
+        fallback_response = f"""
+I couldn't improve your prompt due to a technical error, but here are some tips to make it better on your own:
+
+1. Add specific details about what objects should appear in your animation (circles, squares, etc.)
+2. Specify exact coordinates, colors, and sizes for each element
+3. Detail the sequence of animations with specific timing (seconds for each step)
+4. Include any mathematical formulas written in LaTeX format
+5. Describe transitions between different states of your animation
+
+The more specific your prompt, the better the generated code will be!
+"""
+        logger.info("Returning fallback response for improve_prompt")
+        return fallback_response

@@ -1,65 +1,84 @@
 from manim import *
+import numpy as np
 
-class LLMTrainingAnimation(Scene):
+class DifferentiationAnimation(Scene):
     def construct(self):
-        # 1. Show the dataset
-        dataset = VGroup(*[Tex(text).scale(0.5) for text in ["Book 1", "Article 2", "Website 3"]])
-        dataset.arrange_in_grid(buff=0.5)
-        self.play(Write(dataset))
+        # Set background color
+        self.camera.background_color = "#333333"
+
+        # Create axes
+        axes = Axes(
+            x_range=[-2, 2, 1],
+            y_range=[-4, 4, 2],
+            x_length=7,
+            y_length=5,
+            axis_config={"color": LIGHT_GRAY, "include_tip": False},
+        )
+        x_labels = [-2, -1, 0, 1, 2]
+        y_labels = [-4, -2, 0, 2, 4]
+        coordinate_labels = VGroup()
+        for x in x_labels:
+            coordinate_labels.add(axes.get_x_axis_label(Tex(str(x), color=LIGHT_GRAY).scale(0.7), x))
+        for y in y_labels:
+            coordinate_labels.add(axes.get_y_axis_label(Tex(str(y), color=LIGHT_GRAY).scale(0.7), y))
+
+        # Plot the function
+        def func(x):
+            return x**3 - x
+
+        graph = axes.plot(func, color=BLUE, stroke_width=4)
+
+        # Create derivative formula
+        derivative_formula = MathTex("f'(x) = 3x^2 - 1", color=WHITE).scale(0.75)
+        derivative_formula.to_corner(UR)
+        derivative_formula.shift(LEFT * 3.5 + DOWN * 1.5)
+
+        # Create moving dot and tangent line
+        dot = Dot(color=RED, radius=0.08)
+        x_tracker = ValueTracker(-1.5)
+
+        def get_point_at_x(x):
+            return axes.c2p(x, func(x))
+
+        dot.add_updater(lambda m: m.move_to(get_point_at_x(x_tracker.get_value())))
+
+        def get_tangent_line():
+            x = x_tracker.get_value()
+            slope = 3 * x**2 - 1
+            line = Line(
+                start=get_point_at_x(x) - np.array([1, slope, 0]),
+                end=get_point_at_x(x) + np.array([1, slope, 0]),
+                color=YELLOW,
+                stroke_width=3,
+            )
+            return line
+
+        tangent_line = always_redraw(get_tangent_line)
+
+        # Create derivative value display
+        def get_derivative_value():
+            x = x_tracker.get_value()
+            return 3 * x**2 - 1
+
+        derivative_value = always_redraw(
+            lambda: DecimalNumber(
+                get_derivative_value(), color=GREEN, num_decimal_places=2
+            )
+            .scale(0.9)
+            .next_to(derivative_formula, DOWN, buff=0.2)
+        )
+
+        # Animation sequence
+        self.play(Create(axes), Write(coordinate_labels))
+        self.play(Create(graph))
+        self.play(Write(derivative_formula))
+        self.add(dot, tangent_line, derivative_value)
+        self.play(
+            x_tracker.animate.set_value(1.5), rate_func=linear, run_time=9
+        )
         self.wait(1)
 
-        # 2. Introduce the LLM architecture
-        input_layer = Rectangle(color=BLUE, height=0.5, width=2).to_edge(UP)
-        hidden_layers = VGroup(*[Rectangle(color=GREEN, height=0.5, width=1.5).next_to(input_layer, DOWN, buff=0.5) for _ in range(3)])
-        output_layer = Rectangle(color=RED, height=0.5, width=1).next_to(hidden_layers, DOWN, buff=0.5)
-        self.play(Write(input_layer), Write(hidden_layers), Write(output_layer))
-        self.wait(1)
-
-        # 3. Forward pass of a training example
-        input_text = Tex("Input Text").next_to(input_layer, LEFT)
-        activations = VGroup(*[Circle(color=YELLOW, radius=0.2).move_to(layer.get_center()) for layer in hidden_layers])
-        self.play(Write(input_text), Create(activations))
-        self.wait(1)
-
-        # 4. Loss calculation
-        predicted_output = Tex("Predicted Output").next_to(output_layer, RIGHT)
-        ground_truth = Tex("Ground Truth").next_to(predicted_output, DOWN)
-        loss_graph = Axes(x_range=[0, 10, 1], y_range=[0, 1, 0.1], x_length=4, y_length=2).to_edge(DOWN)
-        loss_curve = loss_graph.plot(lambda x: 0.1 * (x - 5)**2 + 0.5, color=RED)
-        self.play(Write(predicted_output), Write(ground_truth), Create(loss_graph), Create(loss_curve))
-        self.wait(1)
-
-        # 5. Backward pass and gradient calculation
-        gradients = VGroup(*[Arrow(start=layer.get_center(), end=layer.get_center() + UP * 0.5, color=PURPLE) for layer in hidden_layers])
-        self.play(Create(gradients))
-        self.wait(1)
-
-        # 6. Weight update step
-        weight_updates = VGroup(*[Circle(color=ORANGE, radius=0.1).move_to(layer.get_center() + RIGHT * 0.5) for layer in hidden_layers])
-        self.play(Create(weight_updates))
-        self.wait(1)
-
-        # 7. Repeat steps 3-6 for multiple training examples
-        for _ in range(2):
-            self.play(Transform(activations, VGroup(*[Circle(color=YELLOW, radius=0.2).move_to(layer.get_center()) for layer in hidden_layers])),
-                      Transform(gradients, VGroup(*[Arrow(start=layer.get_center(), end=layer.get_center() + UP * 0.5, color=PURPLE) for layer in hidden_layers])),
-                      Transform(weight_updates, VGroup(*[Circle(color=ORANGE, radius=0.1).move_to(layer.get_center() + RIGHT * 0.5) for layer in hidden_layers])))
-            self.wait(1)
-
-        # 8. Show the convergence of the loss
-        loss_convergence = loss_graph.plot(lambda x: 0.05 * (x - 5)**2 + 0.5, color=GREEN)
-        self.play(Transform(loss_curve, loss_convergence))
-        self.wait(1)
-
-        # 9. Show the trained LLM generating text
-        generated_text = Tex("Generated Text").next_to(output_layer, RIGHT)
-        self.play(Transform(predicted_output, generated_text))
-        self.wait(1)
-
-        # Clean up
-        self.play(FadeOut(dataset, input_text, predicted_output, ground_truth, loss_graph, gradients, weight_updates, generated_text))
-        self.wait(1)
 
 if __name__ == "__main__":
-    scene = LLMTrainingAnimation()
+    scene = DifferentiationAnimation()
     scene.render()
