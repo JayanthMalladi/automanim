@@ -7,6 +7,7 @@ import time
 import threading
 import signal
 import os
+import platform
 from functools import wraps
 
 # Setup logging
@@ -18,28 +19,56 @@ logger = logging.getLogger(__name__)
 # Configure timeout for hanging requests
 TIMEOUT_SECONDS = 180
 
+# Check if we're on Windows or Linux/Unix
+is_windows = platform.system() == 'Windows'
+
 def timeout_handler(signum, frame):
     logger.error("Request processing timed out")
     gc.collect()
     raise TimeoutError("Request took too long to process")
 
-# Request timeout decorator
+# Request timeout decorator that works on both Windows and Linux
 def timeout_decorator(seconds):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            # Set the timeout handler
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(seconds)
-            try:
-                result = func(*args, **kwargs)
-                # Cancel the alarm if the function returns
-                signal.alarm(0)
-                return result
-            except Exception as e:
-                # Cancel the alarm if an exception is raised
-                signal.alarm(0)
-                raise e
+            if is_windows:
+                # On Windows, use a simpler timeout mechanism with threads
+                result = [None]
+                exception = [None]
+                
+                def target():
+                    try:
+                        result[0] = func(*args, **kwargs)
+                    except Exception as e:
+                        exception[0] = e
+                
+                thread = threading.Thread(target=target)
+                thread.daemon = True
+                thread.start()
+                thread.join(seconds)
+                
+                if thread.is_alive():
+                    logger.error("Request processing timed out")
+                    gc.collect()
+                    raise TimeoutError("Request took too long to process")
+                
+                if exception[0]:
+                    raise exception[0]
+                return result[0]
+            else:
+                # On Linux/Unix, use SIGALRM
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(seconds)
+                try:
+                    result = func(*args, **kwargs)
+                    # Cancel the alarm if the function returns
+                    signal.alarm(0)
+                    return result
+                except Exception as e:
+                    # Cancel the alarm if an exception is raised
+                    signal.alarm(0)
+                    raise e
         return wrapper
     return decorator
 

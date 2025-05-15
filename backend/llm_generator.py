@@ -8,6 +8,7 @@ import os
 import gc
 import logging
 from dotenv import load_dotenv
+import time
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -18,23 +19,50 @@ load_dotenv()
 # Get API credentials from environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-prover-v2:free")
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "google/palm-2-codechat-bison:free")  # Fallback model
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "180"))
 
 # Global LLM instance
 _llm_instance = None
+_using_fallback = False
 
-def get_llm():
+def get_llm(use_fallback=False):
     """Lazy-load the LLM instance only when needed"""
-    global _llm_instance
+    global _llm_instance, _using_fallback
+    
+    # Reset the instance if we're switching between primary and fallback
+    if use_fallback and not _using_fallback:
+        _llm_instance = None
+        _using_fallback = True
+    elif not use_fallback and _using_fallback:
+        _llm_instance = None
+        _using_fallback = False
+    
     if _llm_instance is None:
         try:
+            # Choose which model to use
+            model = FALLBACK_MODEL if use_fallback else DEFAULT_MODEL
+            
+            logger.info(f"Creating LLM instance with model: {model}")
+            logger.info(f"API Base: {OPENROUTER_API_BASE}")
+            
+            # Add HTTP headers required by OpenRouter
+            headers = {
+                "HTTP-Referer": "https://automanim.app",  # Replace with your actual domain
+                "X-Title": "AutoManim"
+            }
+            
             _llm_instance = ChatOpenAI(
                 openai_api_key=OPENROUTER_API_KEY,
                 openai_api_base=OPENROUTER_API_BASE,
-                model_name=DEFAULT_MODEL,
-                request_timeout=180  # Increase timeout
+                model_name=model,
+                request_timeout=REQUEST_TIMEOUT,
+                max_retries=2,
+                default_headers=headers
             )
-            logger.info("LLM instance created successfully")
+            logger.info(f"LLM instance created successfully using {'fallback' if use_fallback else 'primary'} model")
         except Exception as e:
             logger.error(f"Error creating LLM instance: {str(e)}")
             raise
@@ -50,113 +78,124 @@ def generate_manim_code(prompt):
         logger.info(f"Generating Manim code for prompt of length {len(prompt)}")
         
         system_template = """
-You are an expert AI specialized in generating complete, production-ready Manim code for creating educational animations, similar to those seen in 3Blue1Brown's videos. Your primary objective is to provide clean, functional, and fully executable Manim code without placeholders, TODOs, or partial implementations.
+You are an expert programmer specializing in creating Manim animations for educational content. Your task is to write clean, executable Manim code that implements the user's request completely.
 
-### Instructions:
-1. **Imports**: Start by importing all necessary modules from the Manim library (`from manim import *`). Include any other required Python libraries (numpy, math, etc.) needed for the animation.
+Key requirements:
+1. Import necessary modules (manim, numpy, etc.)
+2. Create a Scene class with a descriptive name
+3. Implement a full construct method with all requested features
+4. Include helper methods as needed for organization
+5. Implement complete, functioning code without TODOs or placeholders
+6. Add appropriate wait times between animation steps
+7. Include the render code with if __name__ == "__main__"
 
-2. **Code Structure**:
-   - Create a class that inherits from `Scene` with a descriptive name related to the animation content.
-   - Implement a complete `construct` method with all functionality fully implemented.
-   - Include any helper methods needed to organize the code and avoid repetition.
-   - Wrap the code with `if __name__ == "__main__":` and include the render call.
-   - Use proper error handling when appropriate.
+Your response must ONLY contain the Python code, with no additional explanations outside code comments.
 
-3. **COMPLETE Implementation Requirements**:
-   - NEVER use placeholder comments like "TODO", "implement this", or similar phrases.
-   - ALWAYS fully implement all functionality mentioned in the prompt.
-   - Break complex animations into manageable steps with clear transitions.
-   - Include all mathematical formulas, visual elements, and animations requested.
-   - For complex animations, create helper functions rather than leaving parts incomplete.
-   - If something seems ambiguous, make reasonable assumptions and implement it fully rather than leaving it incomplete.
-
-4. **Best Practices**:
-   - Use the latest version of Manim Community conventions (v0.18.0+).
-   - Use LaTeX (`MathTex`, `Tex`) for all mathematical expressions.
-   - Implement smooth transitions and proper animation timing.
-   - Include appropriate wait times between animation steps.
-   - Use color, positioning, and scaling to create visually appealing animations.
-   - Add camera movements when appropriate for dynamic animations.
-
-5. **Output Format**:
-   - Provide ONLY the complete Python code, ready to be executed with manim.
-   - DO NOT include triple backticks or explanations outside the code.
-   - Include helpful comments within the code to explain the animation flow.
-   - Ensure class and function names are descriptive and follow PEP8 naming conventions.
-
-Remember: Your output will be directly executed by users, so it must be COMPLETE, EXECUTABLE, and FULLY IMPLEMENTED. Do not leave any part of the animation as an exercise for the user.
-
-### Complete Working Template:
+Example structure:
 ```python
 from manim import *
-import numpy as np  # Import additional libraries as needed
+import numpy as np
 
 class YourAnimation(Scene):
     def construct(self):
-        # Complete implementation of the animation
-        # No TODOs or placeholders allowed
-        
-        # Example of fully implemented animation
-        title = Title("Complete Animation")
+        # Complete implementation here
+        title = Text("Animation Title")
         self.play(Write(title))
-        
-        # Mathematical expression with full implementation
-        formula = MathTex(r"f(x) = x^2 + 2x + 1")
-        self.play(Write(formula))
-        
-        # Make sure timing is appropriate
         self.wait(1)
         
-        # Example of a transformation with complete implementation
-        new_formula = MathTex(r"f(x) = (x + 1)^2")
-        self.play(TransformMatchingTex(formula, new_formula))
-        self.wait(2)
+        # Rest of the implementation
+        # ...
 
 if __name__ == "__main__":
     scene = YourAnimation()
     scene.render()
-```
-
-Always verify that your code is syntactically correct, handles all edge cases, and fully implements the requested animation without any placeholders or TODO comments."""
+```"""
         systemMessage = SystemMessagePromptTemplate.from_template(system_template)
         human_template = "Question : {question}"
         human_message = HumanMessagePromptTemplate.from_template(human_template)
         chat_prompt = ChatPromptTemplate.from_messages([systemMessage, human_message])
-
-        # Use the lazily loaded LLM
-        llm = get_llm()
-
-        # Create a new chain for each request to avoid memory leaks
-        llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"question": prompt})
-
-        # Extract the text from the response object and clear references
-        if isinstance(response, dict) and "text" in response:
-            result = response["text"]
-            # Clear references
-            response.clear()
-        else:
-            result = str(response)
-
-        # Optionally, strip markdown code block markers
-        if result.startswith("```python"):
-            result = result[len("```python"):].strip()
-        if result.endswith("```"):
-            result = result[:-3].strip()
-
-        # Force garbage collection to free memory
-        chat_prompt = None
-        llm_chain = None
-        gc.collect()
         
-        logger.info(f"Successfully generated code of length {len(result)}")
-        return result
+        # Try with primary model first, then fallback if needed
+        use_fallback = False
+        retry_delay = 2  # seconds
+        total_attempts = 0
+        
+        for model_attempt in range(2):  # Try primary, then fallback if needed
+            if total_attempts >= MAX_RETRIES:
+                break
+                
+            # Try to get the LLM instance
+            try:
+                llm = get_llm(use_fallback=use_fallback)
+            except Exception as e:
+                logger.error(f"Failed to initialize {'fallback' if use_fallback else 'primary'} LLM: {str(e)}")
+                if not use_fallback:
+                    # Try fallback model
+                    use_fallback = True
+                    continue
+                else:
+                    # Both models failed to initialize
+                    return f"// Error: Failed to initialize AI models: {str(e)}"
+
+            # Create a new chain for each request to avoid memory leaks
+            llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
+            
+            # Add retry logic for API calls
+            for attempt in range(MAX_RETRIES - total_attempts):
+                total_attempts += 1
+                try:
+                    model_type = "fallback" if use_fallback else "primary"
+                    logger.info(f"Attempt {total_attempts}/{MAX_RETRIES} using {model_type} model")
+                    
+                    response = llm_chain.invoke({"question": prompt})
+                    
+                    # Extract the text from the response object and clear references
+                    if isinstance(response, dict) and "text" in response:
+                        result = response["text"]
+                        # Clear references
+                        response.clear()
+                    else:
+                        result = str(response)
+                    
+                    # Successfully got a response, break the retry loop
+                    logger.info(f"Successfully generated code using {model_type} model")
+                    
+                    # Optionally, strip markdown code block markers
+                    if result.startswith("```python"):
+                        result = result[len("```python"):].strip()
+                    if result.endswith("```"):
+                        result = result[:-3].strip()
+                        
+                    # Force garbage collection to free memory
+                    chat_prompt = None
+                    llm_chain = None
+                    gc.collect()
+                    
+                    logger.info(f"Successfully generated code of length {len(result)}")
+                    return result
+                    
+                except Exception as e:
+                    logger.error(f"Attempt {total_attempts} with {model_type} model failed: {str(e)}")
+                    if total_attempts < MAX_RETRIES:
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 1.5  # Exponential backoff
+                        gc.collect()  # Force garbage collection between retries
+                    
+                    # If using primary model and hit an error, try fallback
+                    if not use_fallback and total_attempts >= (MAX_RETRIES // 2):
+                        logger.info("Switching to fallback model")
+                        use_fallback = True
+                        break
+            
+        # If we get here, all attempts failed
+        logger.error("All generation attempts failed")
+        return "// Error: Unable to generate code after multiple attempts. Please try again with a simpler prompt."
 
     except Exception as e:
         logger.error(f"Error generating code: {str(e)}", exc_info=True)
         gc.collect()  # Try to free memory even on failure
-        return f"// Error generating code: {str(e)}"
-    
+        return f"// Error generating code: {str(e)}\n// Please try again with a simpler prompt or contact support if the issue persists."
 
 def improve_prompt(prompt):
     logger.info("improve_prompt function called")
@@ -167,50 +206,18 @@ def improve_prompt(prompt):
             prompt = prompt[:5000]
             
         system_template = """
-As an expert assistant specializing in Manim animation code, your task is to transform vague or incomplete user prompts into highly detailed, specific instructions that will result in fully-implemented animation code with no TODOs or placeholders.
+Your task is to expand a user's vague animation request into detailed instructions for creating a Manim animation.
 
-### Your Transformation Process:
+Provide specific details on:
+1. Visual elements to include (shapes, equations, text)
+2. Animation sequences and transitions
+3. Colors, positions, and styling
+4. Timing and flow of the animation
+5. Mathematical formulas and notations (if applicable)
 
-### 1. Expand the Animation Scope:
-   - Identify the core animation concept in the user's prompt
-   - Add specific details about the visual elements that should appear (shapes, equations, text, etc.)
-   - Specify exact animations (fading, morphing, moving along paths, etc.)
-   - Include timing details (duration, pauses between steps)
-   - Add color specifications, positioning, and stylistic elements
-   - Ensure all mathematical notations or formulas are completely defined
+Do NOT generate code. Instead, provide a detailed description that would allow a programmer to implement the animation without guesswork.
 
-### 2. Technical Specifications:
-   - Include specific Manim objects to use (Circle, Square, MathTex, Axes, etc.)
-   - Specify animation methods (Create, Write, Transform, MoveAlongPath, etc.)
-   - Include details about camera movements if relevant
-   - Suggest specific coordinates or layouts
-   - Mention any required mathematical functions or transformations
-   - Include specific colors, sizes, and styling parameters
-
-### 3. Animation Sequence and Flow:
-   - Break down the animation into clear sequential steps
-   - Specify transitions between different elements
-   - Define how mathematical concepts should evolve or transform
-   - Ensure logical progression in educational content
-   - Include specific wait times between key animation points
-   - Define how complex elements should be built up step-by-step
-
-### 4. Provide a Complete Animation Blueprint:
-   - Structure your response as a clear, detailed specification
-   - Include all necessary information for implementation without guesswork
-   - Eliminate any ambiguities that could lead to placeholder code
-   - Provide specific values for parameters where needed (coordinates, sizes, colors, durations)
-   - Ensure each animation step is fully described with Manim terminology
-
-### Important Guidelines:
-   - DO NOT GENERATE CODE - only produce a detailed prompt
-   - DO NOT include the user's original prompt verbatim
-   - FOCUS on adding specific implementation details that eliminate the need for placeholders
-   - ASSUME the animation will be implemented exactly as you describe, so be comprehensive
-   - ENSURE your prompt would lead to code with no TODOs or "implement this later" comments
-   - Use proper Manim terminology that aligns with the latest Manim Community version
-
-Your goal is to create a prompt so detailed and specific that it eliminates any need for the developer to make significant decisions or leave parts unimplemented due to ambiguity."""
+Format your response as a clear, detailed specification, focusing on Manim's specific objects and methods."""
         system_message = SystemMessagePromptTemplate.from_template(system_template)
 
         human_template = "Prompt: {prompt}"
@@ -218,28 +225,77 @@ Your goal is to create a prompt so detailed and specific that it eliminates any 
 
         chat_prompt = ChatPromptTemplate.from_messages([system_message, human_message])
         
-        # Use the lazily loaded LLM
-        llm = get_llm()
+        # Try with primary model first, then fallback if needed
+        use_fallback = False
+        retry_delay = 2  # seconds
+        total_attempts = 0
+        
+        for model_attempt in range(2):  # Try primary, then fallback if needed
+            if total_attempts >= MAX_RETRIES:
+                break
+                
+            # Try to get the LLM instance
+            try:
+                llm = get_llm(use_fallback=use_fallback)
+            except Exception as e:
+                logger.error(f"Failed to initialize {'fallback' if use_fallback else 'primary'} LLM: {str(e)}")
+                if not use_fallback:
+                    # Try fallback model
+                    use_fallback = True
+                    continue
+                else:
+                    # Both models failed to initialize
+                    raise Exception(f"Failed to initialize AI models: {str(e)}")
 
-        # Create a new chain for each request
-        llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"prompt": prompt})
-        
-        # Extract the text from the response object
-        if isinstance(response, dict) and "text" in response:
-            improved = response["text"]
-            # Clear references
-            response.clear()
-        else:
-            improved = str(response)
+            # Create a new chain for each request
+            llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
             
-        # Clear references to help with garbage collection
-        chat_prompt = None
-        llm_chain = None
-        gc.collect()
+            # Add retry logic for API calls
+            for attempt in range(MAX_RETRIES - total_attempts):
+                total_attempts += 1
+                try:
+                    model_type = "fallback" if use_fallback else "primary"
+                    logger.info(f"Attempt {total_attempts}/{MAX_RETRIES} using {model_type} model to improve prompt")
+                    
+                    response = llm_chain.invoke({"prompt": prompt})
+                    
+                    # Extract the text from the response object
+                    if isinstance(response, dict) and "text" in response:
+                        improved = response["text"]
+                        # Clear references
+                        response.clear()
+                    else:
+                        improved = str(response)
+                    
+                    # Successfully got a response
+                    logger.info(f"Successfully improved prompt using {model_type} model")
+                    
+                    # Clear references to help with garbage collection
+                    chat_prompt = None
+                    llm_chain = None
+                    gc.collect()
+                    
+                    logger.info(f"Successfully improved prompt of length {len(improved)}")
+                    return improved.strip()
+                    
+                except Exception as e:
+                    logger.error(f"Attempt {total_attempts} with {model_type} model failed: {str(e)}")
+                    if total_attempts < MAX_RETRIES:
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 1.5  # Exponential backoff
+                        gc.collect()  # Force garbage collection between retries
+                    
+                    # If using primary model and hit an error, try fallback
+                    if not use_fallback and total_attempts >= (MAX_RETRIES // 2):
+                        logger.info("Switching to fallback model for prompt improvement")
+                        use_fallback = True
+                        break
+            
+        # If we get here, all attempts failed
+        logger.error("All prompt improvement attempts failed")
+        raise Exception("Unable to improve prompt after multiple attempts. Please try again with a clearer prompt.")
         
-        logger.info(f"Successfully improved prompt of length {len(improved)}")
-        return improved.strip()
     except Exception as e:
         logger.error(f"Error in improve_prompt: {str(e)}", exc_info=True)
         gc.collect()  # Try to free memory even on failure
