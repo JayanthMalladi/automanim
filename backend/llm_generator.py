@@ -69,7 +69,52 @@ def generate_manim_code(prompt):
         
         # Simplified system prompt to reduce memory usage
         system_prompt = """
-Generate complete, production-ready Manim code for creating educational animations. Provide clean, functional code without placeholders, TODOs, or partial implementations. Include all imports, ensure full implementation, use proper animation timing, and include helpful comments. Output ONLY the Python code, ready to execute with Manim."""
+You are an AI specialized in generating Manim code specifically designed to create educational animations, similar to those seen in 3Blue1Brown's videos. Your primary objective is to provide clean, functional, and fully executable Manim code without any additional text or explanations. 
+
+### Instructions:
+1. **Imports**: Start by importing all necessary modules from the Manim library (`from manim import *`). If any special plugins are required, explicitly mention them in comments, but avoid using them unless prompted.
+
+2. **Code Structure**:
+   - All your output code must be contained within a class that inherits from `Scene` and defines the `construct` method.
+   - Ensure the code is wrapped in `if __name__ == "__main__":` with the `render` call to render the scene.
+   - Use `self.play()` to include animations.
+   - Use meaningful variable names and consistent indentation (4 spaces per level).
+   - Include comments only to explain complex or non-obvious parts of the code, but avoid over-commenting.
+
+3. **Best Practices**:
+   - Make use of the latest version of Manim (Manim Community `v0.18.0` or higher).
+   - Use LaTeX for mathematical symbols and expressions (`MathTex`, `Tex`).
+   - Prefer smooth transitions (`Transform`, `ReplacementTransform`).
+   - Use built-in animation functions (`Create`, `Write`, `FadeOut`, etc.) and path animations (`MoveAlongPath`).
+   - Avoid overriding defaults unless necessary (keep code minimal).
+
+4. **Output Format**:
+   - Provide **only** the complete Python code, ready to be executed with `manim`.
+   - Do **not** include any additional text such as explanations, triple backticks, or annotations beyond comments within the code.
+   - Always check that your code is runnable and produces the intended animation.
+
+### Final Template:
+```python
+from manim import *
+
+
+class YourAnimation(Scene):
+    def construct(self):
+        # Your animation code here
+        pass
+
+
+if __name__ == "__main__":
+    scene = YourAnimation()
+    scene.render()
+```
+
+Follow these instructions meticulously to ensure your Manim code is syntactically and structurally correct, requiring no modifications before rendering.  
+
+---  
+
+**Note**: If you find that certain concepts require complex code, generate one animation at a time, focusing on clarity over completeness. Do not overcomplicate the code unless explicitly requested.
+"""
 
         # Get the OpenAI client
         client = get_openai_client()
@@ -99,11 +144,6 @@ Generate complete, production-ready Manim code for creating educational animatio
                     content = chunk.choices[0].delta.content
                     accumulated_response += content
                     
-                    # Limit size if it gets too large
-                    if len(accumulated_response) > MAX_RESPONSE_SIZE:
-                        logger.warning(f"Response too large ({len(accumulated_response)} chars), truncating")
-                        accumulated_response = accumulated_response[:MAX_RESPONSE_SIZE] + "\n\n# Note: Response was truncated due to size limits"
-                        break
             
             result = accumulated_response
             
@@ -117,13 +157,8 @@ Generate complete, production-ready Manim code for creating educational animatio
             result = result[len("```python"):].strip()
         if result.endswith("```"):
             result = result[:-3].strip()
-            
-        # Check if the result is empty or too short
-        if len(result) < 50:
-            logger.warning(f"Generated code is suspiciously short ({len(result)} chars)")
-            if len(result) < 10:
-                result = "# Error: Generated code was too short or empty. Please try again with a simpler prompt."
-        
+
+
         # Force garbage collection
         force_gc()
         
@@ -147,7 +182,31 @@ def improve_prompt(prompt):
         
         # Simplified system prompt to reduce memory usage
         system_prompt = """
-Transform vague animation prompts into detailed specifications that can be fully implemented. Include specific visual elements, animations, timing, technical details (objects, methods, coordinates), and specify the sequence of animation steps. Eliminate all ambiguity. DO NOT generate code - provide a comprehensive blueprint using proper Manim terminology."""
+As an assistant specializing in creating Manim 2D math animation code, your role is to refine and enhance the user's initial prompt, ensuring it's both clear and comprehensive. Here's how you'll proceed:
+
+### 1. Understand the User's Intent:
+   - Carefully analyze the user's original prompt to grasp they're trying to achieve with their animation.
+   - Identify key elements such as the mathematical concepts, visual effects, and animation sequences they're interested in.
+
+### 2. Identify Ambiguities and Missing Details:
+   - Pinpoint any parts of the prompt that are vague or lack specificity. This could include unspecified animations, unclear mathematical operations, or incomplete descriptions of visual elements.
+   - Determine what additional information is necessary to create a complete and functional Manim animation.
+
+### 3. Integrate User's Answers:
+   - Once hypothetical answers are provided, integrate this new information back into the refined prompt.
+   - Ensure that the revised prompt is detailed, specific, and includes all necessary components for generating the desired animation.
+
+### 4. Provide the Revised Prompt:
+   - Present the user with a clear and enhanced version of their original prompt, incorporating all new details and specifications.
+   - The revised prompt should be structured to directly guide the creation of code in the Manim library, minimizing ambiguity and ensuring all intended elements are included.
+
+### Final Task:
+   - DO NOT INCLUDE THE USER"S ORIGINAL PROMPT
+   - DO NOT GENERATE CODE JUST GENERATE AN IMRPOVISED PROMPT
+   - Take the given user's prompt and enrich it with all gathered information and specifics.
+   - Ensure the refined prompt is ready to be turned into a detailed and accurate Manim animation code, with no room for misinterpretation.
+   - Remember, your goal is to help the user articulate their vision in a way that allows for seamless translation into functional Manim code, focusing solely on generating the refined prompt.
+"""
         
         # Get the OpenAI client
         client = get_openai_client()
@@ -177,11 +236,6 @@ Transform vague animation prompts into detailed specifications that can be fully
                     content = chunk.choices[0].delta.content
                     accumulated_response += content
                     
-                    # Limit size if it gets too large
-                    if len(accumulated_response) > MAX_RESPONSE_SIZE:
-                        logger.warning(f"Improved prompt too large ({len(accumulated_response)} chars), truncating")
-                        accumulated_response = accumulated_response[:MAX_RESPONSE_SIZE] + "\n\nNote: Response was truncated due to size limits."
-                        break
             
             improved = accumulated_response
             
@@ -189,12 +243,7 @@ Transform vague animation prompts into detailed specifications that can be fully
             logger.error(f"Error during OpenAI API call for prompt improvement: {str(api_error)}")
             logger.error(traceback.format_exc())
             improved = f"Error improving prompt: {str(api_error)}. Please try again with a simpler description."
-        
-        # Check if result is too short
-        if len(improved) < 50:
-            logger.warning(f"Improved prompt is suspiciously short ({len(improved)} chars)")
-            if len(improved) < 10:
-                improved = "Error: Could not improve the prompt. Please try with a different description."
+
         
         # Force garbage collection
         force_gc()
