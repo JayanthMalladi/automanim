@@ -65,11 +65,6 @@ def generate_manim_code(prompt):
     log_memory_usage()
     
     try:
-        # Trim prompt if it's too long
-        if len(prompt) > MAX_REQUEST_SIZE:
-            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to {MAX_REQUEST_SIZE} chars")
-            prompt = prompt[:MAX_REQUEST_SIZE]
-            
         logger.info(f"Generating Manim code for prompt of length {len(prompt)}")
         
         # Simplified system prompt to reduce memory usage
@@ -148,10 +143,7 @@ def improve_prompt(prompt):
     log_memory_usage()
     
     try: 
-        # Trim prompt if it's too long
-        if len(prompt) > MAX_REQUEST_SIZE:
-            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to {MAX_REQUEST_SIZE} chars")
-            prompt = prompt[:MAX_REQUEST_SIZE]
+        logger.info(f"Improving prompt of length {len(prompt)}")
         
         # Simplified system prompt to reduce memory usage
         system_prompt = """
@@ -186,9 +178,9 @@ Transform vague animation prompts into detailed specifications that can be fully
                     accumulated_response += content
                     
                     # Limit size if it gets too large
-                    if len(accumulated_response) > MAX_REQUEST_SIZE * 2:
+                    if len(accumulated_response) > MAX_RESPONSE_SIZE:
                         logger.warning(f"Improved prompt too large ({len(accumulated_response)} chars), truncating")
-                        accumulated_response = accumulated_response[:MAX_REQUEST_SIZE * 2] + "\n\nNote: Response was truncated due to size limits."
+                        accumulated_response = accumulated_response[:MAX_RESPONSE_SIZE] + "\n\nNote: Response was truncated due to size limits."
                         break
             
             improved = accumulated_response
