@@ -1,7 +1,5 @@
 # AutoManim
 
-![AutoManim Logo](https://placeholder-for-logo.com/logo.png)
-
 > AI-powered generation of mathematical animations from text descriptions
 
 ## 📋 Overview
