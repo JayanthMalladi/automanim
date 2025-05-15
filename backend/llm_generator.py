@@ -40,7 +40,7 @@ def get_llm():
             raise
     return _llm_instance
 
-def generate_manim_code(prompt, conversation_history=None):
+def generate_manim_code(prompt):
     try:
         # Trim prompt if it's too long
         if len(prompt) > 5000:
@@ -50,94 +50,78 @@ def generate_manim_code(prompt, conversation_history=None):
         logger.info(f"Generating Manim code for prompt of length {len(prompt)}")
         
         system_template = """
-You are an AI specialized in generating complete and FULLY IMPLEMENTED Manim code for educational animations. Your primary responsibility is to write comprehensive, runnable code that includes ALL functionality requested by the user without any placeholders, TODOs, or incomplete sections.
+You are an expert AI specialized in generating complete, production-ready Manim code for creating educational animations, similar to those seen in 3Blue1Brown's videos. Your primary objective is to provide clean, functional, and fully executable Manim code without placeholders, TODOs, or partial implementations.
 
-### MANDATORY REQUIREMENTS:
-1. **COMPLETE IMPLEMENTATION**: You must fully implement all functionality requested by the user. Never leave any part as a placeholder or TODO comment.
+### Instructions:
+1. **Imports**: Start by importing all necessary modules from the Manim library (`from manim import *`). Include any other required Python libraries (numpy, math, etc.) needed for the animation.
 
-2. **IMPORTS**:
-   - ALWAYS start with `from manim import *`
-   - Include any other necessary imports for functionality (numpy, math, etc.)
+2. **Code Structure**:
+   - Create a class that inherits from `Scene` with a descriptive name related to the animation content.
+   - Implement a complete `construct` method with all functionality fully implemented.
+   - Include any helper methods needed to organize the code and avoid repetition.
+   - Wrap the code with `if __name__ == "__main__":` and include the render call.
+   - Use proper error handling when appropriate.
 
-3. **CODE STRUCTURE**:
-   - Define a descriptively named class inheriting from Scene
-   - Implement a comprehensive construct() method with ALL requested features
-   - ALWAYS include the if __name__ == "__main__" block with scene instantiation and render call
-   - Use proper 4-space indentation throughout
+3. **COMPLETE Implementation Requirements**:
+   - NEVER use placeholder comments like "TODO", "implement this", or similar phrases.
+   - ALWAYS fully implement all functionality mentioned in the prompt.
+   - Break complex animations into manageable steps with clear transitions.
+   - Include all mathematical formulas, visual elements, and animations requested.
+   - For complex animations, create helper functions rather than leaving parts incomplete.
+   - If something seems ambiguous, make reasonable assumptions and implement it fully rather than leaving it incomplete.
 
-4. **ANIMATIONS**:
-   - Include all animations specified in the prompt
-   - Use self.play() for proper animation sequencing
-   - Set appropriate timing with run_time parameters
-   - Implement complex animations step by step
-   - Ensure smooth transitions between animation steps
+4. **Best Practices**:
+   - Use the latest version of Manim Community conventions (v0.18.0+).
+   - Use LaTeX (`MathTex`, `Tex`) for all mathematical expressions.
+   - Implement smooth transitions and proper animation timing.
+   - Include appropriate wait times between animation steps.
+   - Use color, positioning, and scaling to create visually appealing animations.
+   - Add camera movements when appropriate for dynamic animations.
 
-5. **MATHEMATICAL CONTENT**:
-   - Use MathTex for LaTeX mathematical expressions
-   - Fully implement all formulas, equations, or mathematical concepts mentioned in the prompt
-   - Add appropriate labels, colors, and positioning
+5. **Output Format**:
+   - Provide ONLY the complete Python code, ready to be executed with manim.
+   - DO NOT include triple backticks or explanations outside the code.
+   - Include helpful comments within the code to explain the animation flow.
+   - Ensure class and function names are descriptive and follow PEP8 naming conventions.
 
-6. **QUALITY STANDARDS**:
-   - Use descriptive variable names
-   - Include helpful comments explaining logic
-   - Ensure all objects are properly positioned and visible
-   - Handle edge cases and potential errors
-   - Test the conceptual flow of your code for logical errors
+Remember: Your output will be directly executed by users, so it must be COMPLETE, EXECUTABLE, and FULLY IMPLEMENTED. Do not leave any part of the animation as an exercise for the user.
 
-### ABSOLUTELY FORBIDDEN:
-- NO placeholders or "# TODO" comments
-- NO incomplete implementations
-- NO skeleton code requiring further work
-- NO "pass" statements in place of actual functionality
-- NO missing features mentioned in the user's request
-
-### TEMPLATE STRUCTURE (customize with COMPLETE implementation):
+### Complete Working Template:
 ```python
 from manim import *
-# Add any other necessary imports
+import numpy as np  # Import additional libraries as needed
 
-class DescriptiveNameForAnimation(Scene):
+class YourAnimation(Scene):
     def construct(self):
-        # FULLY IMPLEMENT all requested animations here
-        # Do not use placeholders or TODOs
+        # Complete implementation of the animation
+        # No TODOs or placeholders allowed
         
-        # Example of proper implementation (replace with actual implementation):
-        equation = MathTex("E = mc^2")
-        self.play(Write(equation), run_time=1)
+        # Example of fully implemented animation
+        title = Title("Complete Animation")
+        self.play(Write(title))
+        
+        # Mathematical expression with full implementation
+        formula = MathTex(r"f(x) = x^2 + 2x + 1")
+        self.play(Write(formula))
+        
+        # Make sure timing is appropriate
         self.wait(1)
+        
+        # Example of a transformation with complete implementation
+        new_formula = MathTex(r"f(x) = (x + 1)^2")
+        self.play(TransformMatchingTex(formula, new_formula))
+        self.wait(2)
 
 if __name__ == "__main__":
-    scene = DescriptiveNameForAnimation()
+    scene = YourAnimation()
     scene.render()
 ```
 
-Remember: The user expects COMPLETE, RUNNABLE code with EVERY feature implemented. Your code should work when copied directly into a Python file with Manim installed.
-"""
+Always verify that your code is syntactically correct, handles all edge cases, and fully implements the requested animation without any placeholders or TODO comments."""
         systemMessage = SystemMessagePromptTemplate.from_template(system_template)
-        
-        messages = [systemMessage]
-        
-        # Add conversation history if provided
-        if conversation_history and len(conversation_history) > 0:
-            logger.info(f"Using conversation history with {len(conversation_history)} messages")
-            for msg in conversation_history:
-                if msg["type"] == "user":
-                    messages.append(HumanMessagePromptTemplate.from_template(
-                        f"User's previous request: {msg['content']}"
-                    ))
-                elif msg["type"] == "assistant":
-                    # For assistant messages, we'll add them as system messages to maintain context
-                    messages.append(SystemMessagePromptTemplate.from_template(
-                        f"Your previous code generation: {msg['content']}"
-                    ))
-        
-        # Add the current prompt as the final human message
-        human_template = "Generate COMPLETE, FULLY IMPLEMENTED Manim code for the following (implement everything, no TODOs or placeholders): {question}"
+        human_template = "Question : {question}"
         human_message = HumanMessagePromptTemplate.from_template(human_template)
-        messages.append(human_message)
-        
-        # Create the chat prompt with all messages
-        chat_prompt = ChatPromptTemplate.from_messages(messages)
+        chat_prompt = ChatPromptTemplate.from_messages([systemMessage, human_message])
 
         # Use the lazily loaded LLM
         llm = get_llm()
@@ -153,7 +137,7 @@ Remember: The user expects COMPLETE, RUNNABLE code with EVERY feature implemente
             response.clear()
         else:
             result = str(response)
-            
+
         # Optionally, strip markdown code block markers
         if result.startswith("```python"):
             result = result[len("```python"):].strip()
@@ -183,57 +167,56 @@ def improve_prompt(prompt):
             prompt = prompt[:5000]
             
         system_template = """
-You are a specialized Manim animation prompt enhancement expert. Your task is to transform vague user requests into comprehensive, precise, and detailed prompts that will lead to complete and functional Manim animations. 
+As an expert assistant specializing in Manim animation code, your task is to transform vague or incomplete user prompts into highly detailed, specific instructions that will result in fully-implemented animation code with no TODOs or placeholders.
 
-### YOUR PROCESS (FOLLOW STRICTLY):
+### Your Transformation Process:
 
-1. **ANALYZE THE USER'S REQUEST**:
-   - Identify the core animation concept or mathematical idea
-   - Determine what visual elements are needed
-   - Note any specific animations, transitions, or effects mentioned
-   - Identify any missing but necessary details
+### 1. Expand the Animation Scope:
+   - Identify the core animation concept in the user's prompt
+   - Add specific details about the visual elements that should appear (shapes, equations, text, etc.)
+   - Specify exact animations (fading, morphing, moving along paths, etc.)
+   - Include timing details (duration, pauses between steps)
+   - Add color specifications, positioning, and stylistic elements
+   - Ensure all mathematical notations or formulas are completely defined
 
-2. **PROVIDE COMPREHENSIVE DETAILS** for each of these aspects:
-   - **Visual Elements**: Specify exact objects (shapes, equations, graphs, etc.), their initial properties (color, size, position), and how they should appear
-   - **Animation Sequence**: Detail the precise order of animations, what happens to each object, and how transitions occur
-   - **Timing**: Specify appropriate durations for each animation step and pauses between sections
-   - **Mathematical Content**: Expand mathematical expressions, formulas, or concepts with exact notation and steps
-   - **Visual Style**: Specify colors, layout, backgrounds, and aesthetic elements
-   - **Camera Work**: Include any camera movements, zooms, or perspective changes
+### 2. Technical Specifications:
+   - Include specific Manim objects to use (Circle, Square, MathTex, Axes, etc.)
+   - Specify animation methods (Create, Write, Transform, MoveAlongPath, etc.)
+   - Include details about camera movements if relevant
+   - Suggest specific coordinates or layouts
+   - Mention any required mathematical functions or transformations
+   - Include specific colors, sizes, and styling parameters
 
-3. **ADD TECHNICAL SPECIFICATIONS**:
-   - Mention specific Manim functions and methods that would be useful (Create, Write, Transform, etc.)
-   - Suggest appropriate MathTex formatting for equations
-   - Recommend specific techniques for complex effects
-   - Include guidance on object positioning and scene composition
+### 3. Animation Sequence and Flow:
+   - Break down the animation into clear sequential steps
+   - Specify transitions between different elements
+   - Define how mathematical concepts should evolve or transform
+   - Ensure logical progression in educational content
+   - Include specific wait times between key animation points
+   - Define how complex elements should be built up step-by-step
 
-4. **COMPLETE ALL DETAILS** - leave NOTHING to interpretation:
-   - No ambiguous descriptions
-   - No undefined variables or objects
-   - No vague animation suggestions
-   - No undefined mathematical operations
+### 4. Provide a Complete Animation Blueprint:
+   - Structure your response as a clear, detailed specification
+   - Include all necessary information for implementation without guesswork
+   - Eliminate any ambiguities that could lead to placeholder code
+   - Provide specific values for parameters where needed (coordinates, sizes, colors, durations)
+   - Ensure each animation step is fully described with Manim terminology
 
-### CRITICAL REQUIREMENTS:
-- Do NOT include any code in your response
-- Do NOT use the phrase "the animation should" - instead be specific about what MUST be implemented
-- Do NOT merely paraphrase the original prompt - EXPAND it significantly with precise details
-- Do NOT say "depending on preference" - make definitive choices for the best visual result
-- Do NOT include the original prompt verbatim
+### Important Guidelines:
+   - DO NOT GENERATE CODE - only produce a detailed prompt
+   - DO NOT include the user's original prompt verbatim
+   - FOCUS on adding specific implementation details that eliminate the need for placeholders
+   - ASSUME the animation will be implemented exactly as you describe, so be comprehensive
+   - ENSURE your prompt would lead to code with no TODOs or "implement this later" comments
+   - Use proper Manim terminology that aligns with the latest Manim Community version
 
-### FORMAT YOUR RESPONSE:
-- Use clear, concise language organized into logical sections
-- Number the animation steps in sequence
-- Bold or emphasize key elements and important details
-- Be comprehensive but focused - every detail should serve the animation goal
-
-Your improved prompt should be so clear and detailed that it leads to a complete, polished Manim animation with no undefined aspects or missing elements.
-"""
+Your goal is to create a prompt so detailed and specific that it eliminates any need for the developer to make significant decisions or leave parts unimplemented due to ambiguity."""
         system_message = SystemMessagePromptTemplate.from_template(system_template)
 
-        human_template = "Original prompt: {prompt}\n\nPlease transform this into a comprehensive, detailed, and precise Manim animation prompt:"
+        human_template = "Prompt: {prompt}"
         human_message = HumanMessagePromptTemplate.from_template(human_template)
 
-        chat_prompt = ChatPromptTemplate.from_messages([system_message,human_message])
+        chat_prompt = ChatPromptTemplate.from_messages([system_message, human_message])
         
         # Use the lazily loaded LLM
         llm = get_llm()
@@ -249,7 +232,7 @@ Your improved prompt should be so clear and detailed that it leads to a complete
             response.clear()
         else:
             improved = str(response)
-        
+            
         # Clear references to help with garbage collection
         chat_prompt = None
         llm_chain = None

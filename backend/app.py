@@ -79,7 +79,7 @@ def generate():
         logger.info(f"Received generate request from origin: {request.headers.get('Origin', 'Unknown')}")
         logger.info(f"Request headers: {dict(request.headers)}")
         
-        data = request.get_json()
+    data = request.get_json()
         if not data:
             logger.error("No JSON data received in generate endpoint")
             return jsonify({'error': 'No JSON data received'}), 400
@@ -89,12 +89,8 @@ def generate():
             logger.error("No prompt provided in generate endpoint")
             return jsonify({'error': 'No prompt provided'}), 400
             
-        # Get conversation history, if any
-        conversation_history = data.get('conversation_history', [])
-        logger.info(f"Processing prompt with conversation history ({len(conversation_history)} messages)")
-            
-        # Pass conversation history to the generator
-        code = generate_manim_code(prompt, conversation_history)
+        logger.info(f"Processing prompt: {prompt[:50]}...")
+    code = generate_manim_code(prompt)
         processing_time = time.time() - start_time
         logger.info(f"Successfully generated code in {processing_time:.2f} seconds")
         

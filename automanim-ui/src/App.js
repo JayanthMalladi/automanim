@@ -147,10 +147,7 @@ function App() {
       const response = await fetchWithFallback('/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          prompt,
-          conversation_history: messages // Send existing conversation history
-        }),
+        body: JSON.stringify({ prompt }),
         mode: 'cors',
         credentials: 'omit'
       });
