@@ -91,37 +91,20 @@ def generate():
             return jsonify({'error': 'No prompt provided'}), 400
             
         logger.info(f"Processing prompt: {prompt[:50]}...")
+        code = generate_manim_code(prompt)
+        processing_time = time.time() - start_time
+        logger.info(f"Successfully generated code in {processing_time:.2f} seconds")
         
-        try:
-            code = generate_manim_code(prompt)
-            processing_time = time.time() - start_time
-            logger.info(f"Successfully generated code in {processing_time:.2f} seconds")
-            
-            gc.collect()  # Clean up memory
-            return jsonify({'code': code})
-        except Exception as e:
-            # The generate_manim_code function already returns error text instead of raising an exception
-            # but we'll keep this handler just in case
-            logger.error(f"Error in generate_manim_code function: {str(e)}")
-            error_message = f"// Error generating code: {str(e)}\n\n"
-            error_message += "// Please try again with a simpler prompt or check the model availability."
-            return jsonify({'code': error_message}), 200
-            
+        gc.collect()  # Clean up memory
+        return jsonify({'code': code})
     except TimeoutError as e:
         logger.error(f"Request timed out: {str(e)}")
         gc.collect()  # Try to clean up memory
-        return jsonify({
-            'error': 'Request timed out', 
-            'code': '// Error: The request took too long to process. Please try with a simpler prompt.'
-        }), 408
+        return jsonify({'error': 'Request timed out', 'code': '// Error: The request took too long to process. Please try with a simpler prompt.'}), 408
     except Exception as e:
         logger.error(f"Error in generate endpoint: {str(e)}", exc_info=True)
         gc.collect()  # Try to clean up memory
-        
-        # Return a helpful error message
-        error_message = f"// Error: {str(e)}\n\n"
-        error_message += "// Please check your prompt and try again. If the problem persists, try a simpler prompt."
-        return jsonify({'code': error_message, 'error': str(e)}), 200
+        return jsonify({'error': str(e), 'code': f"// Error generating code: {str(e)}"}), 500
 
 
 @app.route('/improve_prompt', methods=['POST'])
@@ -142,31 +125,12 @@ def improve_prompt_route():
             return jsonify({'error': 'No prompt provided'}), 400
             
         logger.info(f"Processing prompt for improvement: {prompt[:50]}...")
+        improved = improve_prompt(prompt)
+        processing_time = time.time() - start_time
+        logger.info(f"Successfully improved prompt in {processing_time:.2f} seconds")
         
-        try:
-            improved = improve_prompt(prompt)
-            processing_time = time.time() - start_time
-            logger.info(f"Successfully improved prompt in {processing_time:.2f} seconds")
-            
-            gc.collect()  # Clean up memory
-            return jsonify({'improved_prompt': improved})
-        except Exception as e:
-            # The improve_prompt function now returns a fallback response instead of raising an exception
-            # but we'll keep this handler just in case
-            logger.error(f"Error in improve_prompt function: {str(e)}")
-            fallback_message = """
-I couldn't improve your prompt due to a technical error, but here are some tips to make it better on your own:
-
-1. Add specific details about what objects should appear in your animation (circles, squares, etc.)
-2. Specify exact coordinates, colors, and sizes for each element
-3. Detail the sequence of animations with specific timing (seconds for each step)
-4. Include any mathematical formulas written in LaTeX format
-5. Describe transitions between different states of your animation
-
-The more specific your prompt, the better the generated code will be!
-"""
-            return jsonify({'improved_prompt': fallback_message}), 200
-            
+        gc.collect()  # Clean up memory
+        return jsonify({'improved_prompt': improved})
     except TimeoutError as e:
         logger.error(f"Request timed out: {str(e)}")
         gc.collect()  # Try to clean up memory
@@ -174,20 +138,7 @@ The more specific your prompt, the better the generated code will be!
     except Exception as e:
         logger.error(f"Error in improve_prompt_route: {str(e)}", exc_info=True)
         gc.collect()  # Try to clean up memory
-        
-        # Return a helpful message even on server error
-        fallback_message = """
-I couldn't improve your prompt due to a server error, but here are some tips to make it better on your own:
-
-1. Add specific details about what objects should appear in your animation (circles, squares, etc.)
-2. Specify exact coordinates, colors, and sizes for each element
-3. Detail the sequence of animations with specific timing (seconds for each step)
-4. Include any mathematical formulas written in LaTeX format
-5. Describe transitions between different states of your animation
-
-The more specific your prompt, the better the generated code will be!
-"""
-        return jsonify({'improved_prompt': fallback_message, 'error': str(e)}), 200
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
