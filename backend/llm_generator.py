@@ -20,7 +20,7 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-prover-v2:free")
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "google/palm-2-codechat-bison:free")  # Fallback model
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "deepseek/deepseek-prover-v2:free")  # Fallback model
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "180"))
 
