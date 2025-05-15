@@ -7,6 +7,7 @@ import time
 import traceback
 import psutil
 import json
+import re
 from dotenv import load_dotenv
 
 # Setup logging
@@ -19,11 +20,11 @@ load_dotenv()
 # Get API credentials from environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-prover-v2:free")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "microsoft/phi-4-reasoning-plus:free")
 
 # Get max sizes from environment variables or use defaults
-MAX_REQUEST_SIZE = int(os.getenv("MAX_REQUEST_SIZE", "3000"))
-MAX_RESPONSE_SIZE = int(os.getenv("MAX_RESPONSE_SIZE", "50000"))
+MAX_REQUEST_SIZE = int(os.getenv("MAX_REQUEST_SIZE", "10000"))
+MAX_RESPONSE_SIZE = int(os.getenv("MAX_RESPONSE_SIZE", "100000"))
 
 # Global OpenAI client
 _openai_client = None
@@ -51,13 +52,34 @@ def get_openai_client():
             _openai_client = OpenAI(
                 api_key=OPENROUTER_API_KEY,
                 base_url=OPENROUTER_API_BASE,
-                timeout=120  # 2 minute timeout
+                timeout=150  # 2.5 minute timeout
             )
             logger.info("OpenAI client created successfully")
         except Exception as e:
             logger.error(f"Error creating OpenAI client: {str(e)}")
             raise
     return _openai_client
+
+def clean_thinking_output(text):
+    """Remove thinking process and intermediate steps from the output"""
+    # Remove any lines containing "thinking" markers
+    clean_text = re.sub(r'(?i)# ?thinking:?.*?(\n|$)', '', text)
+    
+    # Remove any lines with intermediate reasoning
+    clean_text = re.sub(r'(?i)# ?reasoning:?.*?(\n|$)', '', clean_text)
+    clean_text = re.sub(r'(?i)# ?step:?.*?(\n|$)', '', clean_text)
+    
+    # If there are markdown code blocks, extract only the code
+    if "```python" in clean_text:
+        code_blocks = re.findall(r'```python(.*?)```', clean_text, re.DOTALL)
+        if code_blocks:
+            clean_text = code_blocks[0].strip()
+    
+    # Remove explanatory text at beginning and end
+    clean_text = re.sub(r'^.*?(?=from manim import|import manim)', '', clean_text, flags=re.DOTALL)
+    clean_text = re.sub(r'(?<=if __name__ == "__main__".*render\(\)).*$', '', clean_text, flags=re.DOTALL)
+    
+    return clean_text.strip()
 
 def generate_manim_code(prompt):
     """Generate Manim code using direct OpenAI API calls to avoid LangChain memory issues"""
@@ -143,7 +165,6 @@ Follow these instructions meticulously to ensure your Manim code is syntacticall
                 if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     accumulated_response += content
-                    
             
             result = accumulated_response
             
@@ -157,8 +178,10 @@ Follow these instructions meticulously to ensure your Manim code is syntacticall
             result = result[len("```python"):].strip()
         if result.endswith("```"):
             result = result[:-3].strip()
-
-
+        
+        # Clean out any thinking process
+        result = clean_thinking_output(result)
+        
         # Force garbage collection
         force_gc()
         
@@ -235,7 +258,6 @@ As an assistant specializing in creating Manim 2D math animation code, your role
                 if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     accumulated_response += content
-                    
             
             improved = accumulated_response
             
@@ -243,7 +265,19 @@ As an assistant specializing in creating Manim 2D math animation code, your role
             logger.error(f"Error during OpenAI API call for prompt improvement: {str(api_error)}")
             logger.error(traceback.format_exc())
             improved = f"Error improving prompt: {str(api_error)}. Please try again with a simpler description."
-
+        
+        # Remove any thinking markers from the improved prompt
+        improved = re.sub(r'(?i)#+ ?thinking:?.*?(\n|$)', '', improved)
+        improved = re.sub(r'(?i)#+ ?reasoning:?.*?(\n|$)', '', improved)
+        
+        # If there are section headings with ##, only keep the final output
+        if "##" in improved:
+            sections = improved.split("##")
+            # Get the last non-empty section
+            for section in reversed(sections):
+                if section.strip():
+                    improved = section.strip()
+                    break
         
         # Force garbage collection
         force_gc()

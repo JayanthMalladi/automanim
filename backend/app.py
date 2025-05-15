@@ -1,251 +1,223 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from llm_generator import generate_manim_code, improve_prompt, log_memory_usage, force_gc
-import logging
-import gc
-import time
-import threading
-import signal
 import os
-import traceback
+import logging
+import time
+import gc
 import psutil
-from functools import wraps
-
-# Setup logging
-logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s [%(levelname)s] %(message)s',
-                   handlers=[logging.StreamHandler()])
-logger = logging.getLogger(__name__)
-
-# Configure timeout for hanging requests
-TIMEOUT_SECONDS = 300
-MAX_PROMPT_LENGTH = 4000  # Maximum prompt length to accept
-MAX_CODE_SIZE = 100 * 1024  # Maximum size of returned code (100 KB)
-
-def timeout_handler(signum, frame):
-    logger.error("Request processing timed out")
-    gc.collect()
-    raise TimeoutError("Request took too long to process")
-
-# Request timeout decorator
-def timeout_decorator(seconds):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # Set the timeout handler
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(seconds)
-            try:
-                result = func(*args, **kwargs)
-                # Cancel the alarm if the function returns
-                signal.alarm(0)
-                return result
-            except Exception as e:
-                # Cancel the alarm if an exception is raised
-                signal.alarm(0)
-                raise e
-        return wrapper
-    return decorator
+import threading
+from datetime import datetime, timedelta
+from collections import defaultdict
+from llm_generator import generate_manim_code, improve_prompt, force_gc, log_memory_usage
 
 app = Flask(__name__)
-# More permissive CORS configuration
-CORS(app, 
-     resources={r"/*": {"origins": "*"}}, 
-     supports_credentials=False,
-     allow_headers=["Content-Type", "Authorization"],
-     methods=["GET", "POST", "OPTIONS"])
+CORS(app)
 
-# Add request tracking for diagnostics
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Request tracking variables
 request_count = 0
 active_requests = 0
 
+# User rate limiting - track when each user last made a request
+user_last_request = defaultdict(lambda: datetime.min)
+COOLDOWN_SECONDS = 120  # Time in seconds before a user can make another request
+
+def get_user_id():
+    """Get a unique identifier for the current user"""
+    # IP address is a basic way to identify users
+    return request.remote_addr or request.headers.get('X-Forwarded-For', 'unknown')
+
 @app.before_request
 def before_request():
+    """Log memory usage before each request and check for rate limiting"""
+    # Skip rate limiting for non-API routes
+    if not request.path.startswith('/api/improve_prompt') and not request.path.startswith('/api/generate'):
+        return
+    
+    # Check if the user is on cooldown
+    user_id = get_user_id()
+    last_request_time = user_last_request[user_id]
+    time_since_last = datetime.now() - last_request_time
+    
+    if time_since_last < timedelta(seconds=COOLDOWN_SECONDS):
+        time_remaining = COOLDOWN_SECONDS - time_since_last.total_seconds()
+        logger.info(f"Rate limit hit for user {user_id}. {time_remaining:.0f} seconds remaining.")
+        return jsonify({
+            'error': 'Rate limit exceeded',
+            'message': f'Please wait {time_remaining:.0f} seconds before making another request',
+            'time_remaining': int(time_remaining)
+        }), 429
+        
+    # Proceed with the request if no rate limiting issues
     global request_count, active_requests
     request_count += 1
     active_requests += 1
     logger.info(f"Request #{request_count} started. Active requests: {active_requests}")
-    log_memory_usage()
+    force_gc()  # Force garbage collection before each request
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    logger.info(f"[REQUEST START] Memory usage: {mem_info.rss / 1024 / 1024:.2f} MB")
+    request.start_time = time.time()
 
 @app.after_request
 def after_request(response):
+    """Log request duration and memory usage after each request"""
+    # Only update the last request time for API endpoints that need rate limiting
+    if request.path.startswith('/api/improve_prompt') or request.path.startswith('/api/generate'):
+        # Update the last request time for the user
+        user_id = get_user_id()
+        user_last_request[user_id] = datetime.now()
+    
+    # Standard logging and cleanup
     global active_requests
     active_requests -= 1
     logger.info(f"Request completed. Active requests: {active_requests}")
+    duration = time.time() - request.start_time
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    logger.info(f"[REQUEST END] Duration: {duration:.2f}s - Memory: {mem_info.rss / 1024 / 1024:.2f} MB")
     force_gc()  # Force garbage collection after each request
     return response
 
-@app.route('/generate', methods=['POST'])
-@timeout_decorator(TIMEOUT_SECONDS)
-def generate():
-    start_time = time.time()
-    try:
-        # Log request information
-        logger.info(f"Received generate request from origin: {request.headers.get('Origin', 'Unknown')}")
-        
-        # Get JSON data - limit content length
-        if request.content_length and request.content_length > MAX_PROMPT_LENGTH * 2:  # Allow some overhead
-            logger.error(f"Request too large: {request.content_length} bytes")
-            return jsonify({'error': 'Request too large', 'code': '// Error: Your prompt is too large. Please simplify it.'}), 413
-            
-        data = request.get_json()
-        if not data:
-            logger.error("No JSON data received in generate endpoint")
-            return jsonify({'error': 'No JSON data received'}), 400
-            
-        prompt = data.get('prompt', '')
-        if not prompt:
-            logger.error("No prompt provided in generate endpoint")
-            return jsonify({'error': 'No prompt provided'}), 400
-            
-        # Limit prompt size
-        if len(prompt) > MAX_PROMPT_LENGTH:
-            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to {MAX_PROMPT_LENGTH}")
-            prompt = prompt[:MAX_PROMPT_LENGTH]
-            
-        logger.info(f"Processing prompt: {prompt[:50]}...")
-        
-        # Measure memory before generation
-        before_mem = log_memory_usage()
-        
-        # Generate code with a separate try/except to handle specific generation errors
-        try:
-            code = generate_manim_code(prompt)
-        except Exception as gen_error:
-            logger.error(f"Error in code generation: {str(gen_error)}", exc_info=True)
-            # Return a friendly error message
-            return jsonify({
-                'error': 'Code generation failed',
-                'code': f"// Error generating code: {str(gen_error)}\n// Please try again with a simpler prompt."
-            }), 500
-            
-        # Limit response size
-        if len(code) > MAX_CODE_SIZE:
-            logger.warning(f"Generated code too large ({len(code)} bytes), truncating")
-            code = code[:MAX_CODE_SIZE] + "\n\n# Note: Code was truncated due to size limits"
-            
-        processing_time = time.time() - start_time
-        logger.info(f"Successfully generated code in {processing_time:.2f} seconds")
-        
-        # Memory usage after generation
-        after_mem = log_memory_usage()
-        logger.info(f"Memory usage for generation: {after_mem - before_mem:.2f} MB")
-        
-        force_gc()  # Clean up memory
-        return jsonify({'code': code})
-    except TimeoutError as e:
-        logger.error(f"Request timed out: {str(e)}")
-        force_gc()  # Try to clean up memory
-        return jsonify({'error': 'Request timed out', 'code': '// Error: The request took too long to process. Please try with a simpler prompt.'}), 408
-    except Exception as e:
-        logger.error(f"Error in generate endpoint: {str(e)}", exc_info=True)
-        logger.error(traceback.format_exc())
-        force_gc()  # Try to clean up memory
-        return jsonify({'error': str(e), 'code': f"// Error generating code: {str(e)}"}), 500
-
-
-@app.route('/improve_prompt', methods=['POST'])
-@timeout_decorator(TIMEOUT_SECONDS)
+@app.route('/api/improve_prompt', methods=['POST'])
 def improve_prompt_route():
+    """API endpoint to improve an animation prompt"""
     start_time = time.time()
     try:
-        logger.info(f"Received improve_prompt request from origin: {request.headers.get('Origin', 'Unknown')}")
-        
-        # Get JSON data - limit content length
-        if request.content_length and request.content_length > MAX_PROMPT_LENGTH * 2:  # Allow some overhead
-            logger.error(f"Request too large: {request.content_length} bytes")
-            return jsonify({'error': 'Request too large'}), 413
-        
         data = request.get_json()
-        if not data:
-            logger.error("No JSON data received in improve_prompt endpoint")
-            return jsonify({'error': 'No JSON data received'}), 400
-        
-        prompt = data.get('prompt', '')
-        if not prompt:
-            logger.error("No prompt provided in improve_prompt endpoint")
+        if not data or 'prompt' not in data:
             return jsonify({'error': 'No prompt provided'}), 400
-            
-        # Limit prompt size
-        if len(prompt) > MAX_PROMPT_LENGTH:
-            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to {MAX_PROMPT_LENGTH}")
-            prompt = prompt[:MAX_PROMPT_LENGTH]
-            
-        logger.info(f"Processing prompt for improvement: {prompt[:50]}...")
+
+        prompt_text = data['prompt']
+        logger.info(f"Received improve_prompt request with {len(prompt_text)} chars")
         
-        # Measure memory before improvement
-        before_mem = log_memory_usage()
+        if len(prompt_text.strip()) < 5:
+            return jsonify({'error': 'Prompt too short'}), 400
         
-        # Improve prompt with a separate try/except to handle specific improvement errors
-        try:
-            improved = improve_prompt(prompt)
-        except Exception as imp_error:
-            logger.error(f"Error in prompt improvement: {str(imp_error)}", exc_info=True)
-            # Return a friendly error message
-            return jsonify({
-                'error': 'Prompt improvement failed',
-                'message': f"Failed to improve prompt: {str(imp_error)}. Please try with a simpler description."
-            }), 500
-            
-        # Limit response size
-        if len(improved) > MAX_PROMPT_LENGTH * 2:
-            logger.warning(f"Improved prompt too large ({len(improved)} chars), truncating")
-            improved = improved[:MAX_PROMPT_LENGTH * 2] + "\n\nNote: This response was truncated due to size limits."
-            
-        processing_time = time.time() - start_time
-        logger.info(f"Successfully improved prompt in {processing_time:.2f} seconds")
+        # Log memory usage
+        log_memory_usage()
         
-        # Memory usage after improvement
-        after_mem = log_memory_usage()
-        logger.info(f"Memory usage for improvement: {after_mem - before_mem:.2f} MB")
+        # Call the LLM to improve the prompt
+        improved_prompt = improve_prompt(prompt_text)
         
-        force_gc()  # Clean up memory
-        return jsonify({'improved_prompt': improved})
-    except TimeoutError as e:
-        logger.error(f"Request timed out: {str(e)}")
-        force_gc()  # Try to clean up memory
-        return jsonify({'error': 'Request timed out'}), 408
+        # Log processing time and memory
+        process_time = time.time() - start_time
+        logger.info(f"improve_prompt processed in {process_time:.2f} seconds")
+        log_memory_usage()
+        
+        # Hide the thinking process by only returning the final result
+        if "##" in improved_prompt:
+            # If there's a section marker, only return content after the last ##
+            sections = improved_prompt.split("##")
+            improved_prompt = sections[-1].strip()
+        
+        return jsonify({'improved_prompt': improved_prompt})
+    
     except Exception as e:
-        logger.error(f"Error in improve_prompt_route: {str(e)}", exc_info=True)
-        logger.error(traceback.format_exc())
-        force_gc()  # Try to clean up memory
+        logger.error(f"Error in improve_prompt endpoint: {str(e)}", exc_info=True)
+        force_gc()  # Force GC on error
         return jsonify({'error': str(e)}), 500
 
-@app.route('/health', methods=['GET'])
+@app.route('/api/generate', methods=['POST'])
+def generate():
+    """API endpoint to generate Manim code"""
+    start_time = time.time()
+    try:
+        data = request.get_json()
+        if not data or 'prompt' not in data:
+            return jsonify({'error': 'No prompt provided'}), 400
+
+        prompt_text = data['prompt']
+        logger.info(f"Received generation request with {len(prompt_text)} chars")
+        
+        if len(prompt_text.strip()) < 5:
+            return jsonify({'error': 'Prompt too short'}), 400
+        
+        # Log memory usage
+        log_memory_usage()
+        
+        # Call the LLM to generate Manim code
+        manim_code = generate_manim_code(prompt_text)
+        
+        # Log processing time and memory
+        process_time = time.time() - start_time
+        logger.info(f"Generation processed in {process_time:.2f} seconds")
+        log_memory_usage()
+        
+        # Hide the thinking process by ensuring we only show the final code
+        # Remove any comments that might be part of the thinking process
+        if "# Thinking:" in manim_code:
+            manim_code = manim_code.split("# Thinking:")[0].strip()
+        
+        # Strip any markdown formatting that might remain
+        if "```python" in manim_code:
+            manim_code = manim_code.replace("```python", "").replace("```", "").strip()
+        
+        return jsonify({'manim_code': manim_code})
+    
+    except Exception as e:
+        logger.error(f"Error in generate endpoint: {str(e)}", exc_info=True)
+        force_gc()  # Force GC on error
+        return jsonify({'error': str(e)}), 500
+
+# Health check endpoint
+@app.route('/api/health', methods=['GET'])
 def health_check():
-    # Include memory and request info in health check
-    import psutil
+    """Simple health check endpoint"""
     process = psutil.Process(os.getpid())
     memory_info = process.memory_info()
-    memory_mb = memory_info.rss / (1024 * 1024)
-    
     return jsonify({
-        'status': 'ok',
-        'memory_usage_mb': round(memory_mb, 2),
+        'status': 'healthy', 
+        'memory_usage_mb': memory_info.rss / 1024 / 1024,
         'active_requests': active_requests,
         'total_requests': request_count,
-        'uptime_seconds': int(time.time() - process.create_time())
+        'uptime': time.time()
     })
 
-@app.route('/stats', methods=['GET'])
+# Stats endpoint for more detailed metrics
+@app.route('/api/stats', methods=['GET'])
 def stats():
-    # More detailed stats endpoint
-    import psutil
+    """More detailed stats endpoint"""
     process = psutil.Process(os.getpid())
     memory_info = process.memory_info()
     
     return jsonify({
-        'memory': {
-            'rss_mb': round(memory_info.rss / (1024 * 1024), 2),
-            'vms_mb': round(memory_info.vms / (1024 * 1024), 2),
-            'percent': round(process.memory_percent(), 2)
-        },
+        'memory_usage_mb': memory_info.rss / 1024 / 1024,
         'cpu_percent': process.cpu_percent(),
-        'threads': len(process.threads()),
         'active_requests': active_requests,
         'total_requests': request_count,
-        'uptime_seconds': int(time.time() - process.create_time())
+        'threads': len(process.threads()),
+        'open_files': len(process.open_files()),
+        'connections': len(process.connections()),
+        'active_users': len(user_last_request)
     })
+
+# Cooldown status endpoint
+@app.route('/api/cooldown_status', methods=['GET'])
+def cooldown_status():
+    """Check if a user is on cooldown and how much time remains"""
+    user_id = get_user_id()
+    last_request_time = user_last_request[user_id]
+    time_since_last = datetime.now() - last_request_time
+    
+    if time_since_last < timedelta(seconds=COOLDOWN_SECONDS):
+        time_remaining = COOLDOWN_SECONDS - time_since_last.total_seconds()
+        return jsonify({
+            'on_cooldown': True,
+            'time_remaining': int(time_remaining)
+        })
+    else:
+        return jsonify({
+            'on_cooldown': False,
+            'time_remaining': 0
+        })
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    # Force garbage collection at startup
+    force_gc()
+    # Run the Flask app
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

@@ -3,7 +3,7 @@ services:
     name: automanim-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 120 --workers=1 --threads=2 --worker-class=gevent --max-requests 5 --max-requests-jitter 2 --graceful-timeout 60 --keep-alive 5 --log-level info
+    startCommand: gunicorn app:app --timeout 180 --workers=1 --threads=2 --worker-class=gevent --max-requests 3 --max-requests-jitter 2 --graceful-timeout 90 --keep-alive 5 --log-level info
     plan: pro # Upgrade to pro plan for more resources
     envVars:
       - key: OPENROUTER_API_KEY
@@ -11,18 +11,20 @@ services:
       - key: OPENROUTER_API_BASE
         value: https://openrouter.ai/api/v1
       - key: DEFAULT_MODEL
-        value: deepseek/deepseek-prover-v2:free 
+        value: microsoft/phi-4-reasoning-plus:free
       - key: WEB_CONCURRENCY
         value: 1
       - key: PYTHON_MAX_THREADS
         value: 2
       - key: MALLOC_TRIM_THRESHOLD_
-        value: 65536 # More aggressive memory trimming (64KB)
+        value: 32768 # More aggressive memory trimming (32KB)
       - key: PYTHONMALLOC
         value: malloc
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: MAX_REQUEST_SIZE
-        value: "3000"
+        value: "10000"
       - key: MAX_RESPONSE_SIZE
-        value: "50000" 
+        value: "100000"
+      - key: GUNICORN_CMD_ARGS
+        value: "--preload"
