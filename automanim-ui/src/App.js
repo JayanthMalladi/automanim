@@ -5,6 +5,12 @@ import 'prismjs/themes/prism-tomorrow.css';
 import 'prismjs/components/prism-python';
 import './App.css';
 
+// API endpoints with fallbacks
+const API_ENDPOINTS = {
+  primary: 'https://automanim-1.onrender.com',
+  fallback: 'https://automanim-1.onrender.com', // Same for now, could be changed to another backup server
+};
+
 const CodeBlock = ({ code }) => {
   useEffect(() => {
     Prism.highlightAll();
@@ -28,6 +34,7 @@ function App() {
   const [autoExpand, setAutoExpand] = useState(false);
   const [improvedPrompt, setImprovedPrompt] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [currentApiEndpoint, setCurrentApiEndpoint] = useState(API_ENDPOINTS.primary);
   const messagesEndRef = useRef(null);
   const contentAreaRef = useRef(null);
   const textareaRef = useRef(null);
@@ -89,6 +96,44 @@ function App() {
     }
   };
 
+  // Function to try API call with fallback
+  const fetchWithFallback = async (endpoint, options) => {
+    try {
+      console.log(`Attempting to fetch from: ${currentApiEndpoint}${endpoint}`);
+      const response = await fetch(`${currentApiEndpoint}${endpoint}`, options);
+      
+      console.log("Response status:", response.status);
+      console.log("Response headers:", [...response.headers.entries()].map(e => `${e[0]}: ${e[1]}`).join(', '));
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Error response:", errorText);
+        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+      }
+      
+      return response;
+    } catch (error) {
+      console.error(`Error fetching from ${currentApiEndpoint}${endpoint}:`, error);
+      
+      // If we're already using the fallback, just throw the error
+      if (currentApiEndpoint === API_ENDPOINTS.fallback) {
+        throw error;
+      }
+      
+      // Switch to fallback endpoint and retry
+      console.log("Switching to fallback API endpoint");
+      setCurrentApiEndpoint(API_ENDPOINTS.fallback);
+      const fallbackResponse = await fetch(`${API_ENDPOINTS.fallback}${endpoint}`, options);
+      
+      if (!fallbackResponse.ok) {
+        const errorText = await fallbackResponse.text();
+        throw new Error(`HTTP error from fallback! status: ${fallbackResponse.status}, message: ${errorText}`);
+      }
+      
+      return fallbackResponse;
+    }
+  };
+
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
     
@@ -98,21 +143,31 @@ function App() {
     setIsGenerating(true);
 
     try {
-      const response = await fetch('https://automanim-1.onrender.com/generate', {
+      console.log("Fetching from backend...");
+      const response = await fetchWithFallback('/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
+        mode: 'cors',
+        credentials: 'omit'
       });
+      
       const data = await response.json();
+      console.log("Received data:", data);
       
       // Add assistant message immediately
       setMessages(prev => [...prev, { type: 'assistant', content: data.code }]);
       setIsGenerating(false);
     } catch (error) {
       console.error("Error generating code:", error);
+      // More detailed error message for user
+      let errorMessage = "// Error: Could not connect to the server. Please make sure the backend is running.";
+      if (error.message) {
+        errorMessage += `\n// Details: ${error.message}`;
+      }
       setMessages(prev => [...prev, { 
         type: 'assistant', 
-        content: "// Error: Could not connect to the server. Please make sure the backend is running." 
+        content: errorMessage
       }]);
       setIsGenerating(false);
     }
@@ -125,17 +180,13 @@ function App() {
     
     try {
       console.log("Sending prompt to backend:", prompt);
-      const response = await fetch('https://automanim-1.onrender.com/improve_prompt', {
+      const response = await fetchWithFallback('/improve_prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
+        mode: 'cors',
+        credentials: 'omit'
       });
-      
-      console.log("Response status:", response.status);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
       
       const data = await response.json();
       console.log("Received response data:", data);
