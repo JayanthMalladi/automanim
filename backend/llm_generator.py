@@ -1,18 +1,16 @@
 import langchain
 from openai import OpenAI
+from langchain_openai import ChatOpenAI  # Updated import
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 import os
 import gc
 import logging
-import time
-import traceback
-import psutil
-import json
-import re
 from dotenv import load_dotenv
 
 # Setup logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -20,311 +18,229 @@ load_dotenv()
 # Get API credentials from environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "microsoft/phi-4-reasoning-plus:free")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL")
 
-# Get max sizes from environment variables or use defaults
-MAX_REQUEST_SIZE = int(os.getenv("MAX_REQUEST_SIZE", "10000"))
-MAX_RESPONSE_SIZE = int(os.getenv("MAX_RESPONSE_SIZE", "100000"))
+# Global LLM instance
+_llm_instance = None
 
-# Global OpenAI client
-_openai_client = None
-
-# Memory management helper function
-def log_memory_usage():
-    process = psutil.Process(os.getpid())
-    memory_info = process.memory_info()
-    memory_mb = memory_info.rss / (1024 * 1024)
-    logger.info(f"Current memory usage: {memory_mb:.2f} MB")
-    return memory_mb
-
-# Force garbage collection and report memory
-def force_gc():
-    before = log_memory_usage()
-    gc.collect()
-    after = log_memory_usage()
-    logger.info(f"Garbage collection freed {before - after:.2f} MB")
-
-def get_openai_client():
-    """Get or create the OpenAI client"""
-    global _openai_client
-    if _openai_client is None:
+def get_llm():
+    """Lazy-load the LLM instance only when needed"""
+    global _llm_instance
+    if _llm_instance is None:
         try:
-            _openai_client = OpenAI(
-                api_key=OPENROUTER_API_KEY,
-                base_url=OPENROUTER_API_BASE,
-                timeout=150  # 2.5 minute timeout
+            _llm_instance = ChatOpenAI(
+                openai_api_key=OPENROUTER_API_KEY,
+                openai_api_base=OPENROUTER_API_BASE,
+                model_name=DEFAULT_MODEL,
+                request_timeout=180  # Increase timeout
             )
-            logger.info("OpenAI client created successfully")
+            logger.info("LLM instance created successfully")
         except Exception as e:
-            logger.error(f"Error creating OpenAI client: {str(e)}")
+            logger.error(f"Error creating LLM instance: {str(e)}")
             raise
-    return _openai_client
-
-def extract_final_answer(text):
-    """Extract only the final answer from the reasoning model's output.
-    This function strips out the thinking process and returns only the final result."""
-    
-    logger.info(f"Extracting final answer from text of length {len(text)}")
-    
-    # Look for code blocks first - most reliable way to extract code
-    # Simple pattern that's less likely to cause issues with PowerShell
-    if "```python" in text and "```" in text:
-        # Find the last code block
-        start_pos = text.rfind("```python")
-        if start_pos == -1:  # Try without language specifier
-            start_pos = text.rfind("```")
-        
-        if start_pos != -1:
-            # Move past the backticks and language identifier
-            if text[start_pos:start_pos+8] == "```python":
-                content_start = start_pos + 8
-            else:
-                content_start = start_pos + 3
-                
-            # Find the end of this code block
-            end_pos = text.find("```", content_start)
-            if end_pos != -1:
-                code_block = text[content_start:end_pos].strip()
-                logger.info(f"Found code block of length {len(code_block)}")
-                return code_block
-    
-    # If no code blocks or extraction failed, try to find sections that look like the final answer
-    # Common patterns in reasoning models output
-    answer_markers = ["Final Answer:", "Final Code:", "Final Result:", "Here's the code:"]
-    for marker in answer_markers:
-        if marker in text:
-            pos = text.rfind(marker)
-            if pos != -1:
-                answer = text[pos + len(marker):].strip()
-                logger.info(f"Found answer after marker '{marker}'")
-                return answer
-    
-    # Look for common reasoning model output patterns
-    if "Let's generate the code" in text or "I'll generate the code" in text:
-        # Find the last occurrence of these phrases
-        pos1 = text.rfind("Let's generate the code")
-        pos2 = text.rfind("I'll generate the code")
-        pos = max(pos1, pos2)
-        
-        if pos != -1:
-            # Find the next period after this phrase
-            next_period = text.find(".", pos)
-            if next_period != -1:
-                answer = text[next_period + 1:].strip()
-                logger.info(f"Found answer after generation phrase")
-                return answer
-    
-    # If all else fails, look for the largest paragraph at the end
-    paragraphs = text.split("\n\n")
-    if paragraphs:
-        # Get the last substantial paragraph
-        for p in reversed(paragraphs):
-            if len(p.strip()) > 100:
-                logger.info(f"Using last substantial paragraph as answer")
-                return p.strip()
-    
-    # If no patterns matched, return the entire text as a fallback
-    logger.info("No clear final answer pattern found, returning full text")
-    return text
+    return _llm_instance
 
 def generate_manim_code(prompt):
-    """Generate Manim code using direct OpenAI API calls to avoid LangChain memory issues"""
-    start_time = time.time()
-    log_memory_usage()
-    
     try:
+        # Trim prompt if it's too long
+        if len(prompt) > 5000:
+            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to 5000 chars")
+            prompt = prompt[:5000]
+            
         logger.info(f"Generating Manim code for prompt of length {len(prompt)}")
         
-        # Simplified system prompt to reduce memory usage
-        system_prompt = """
-You are an AI specialized in generating Manim code specifically designed to create educational animations, similar to those seen in 3Blue1Brown's videos. Your primary objective is to provide clean, functional, and fully executable Manim code without any additional text or explanations. 
+        system_template = """
+You are an expert AI specialized in generating complete, production-ready Manim code for creating educational animations, similar to those seen in 3Blue1Brown's videos. Your primary objective is to provide clean, functional, and fully executable Manim code without placeholders, TODOs, or partial implementations.
 
 ### Instructions:
-1. **Imports**: Start by importing all necessary modules from the Manim library (`from manim import *`). If any special plugins are required, explicitly mention them in comments, but avoid using them unless prompted.
+1. **Imports**: Start by importing all necessary modules from the Manim library (`from manim import *`). Include any other required Python libraries (numpy, math, etc.) needed for the animation.
 
 2. **Code Structure**:
-   - All your output code must be contained within a class that inherits from `Scene` and defines the `construct` method.
-   - Ensure the code is wrapped in `if __name__ == "__main__":` with the `render` call to render the scene.
-   - Use `self.play()` to include animations.
-   - Use meaningful variable names and consistent indentation (4 spaces per level).
-   - Include comments only to explain complex or non-obvious parts of the code, but avoid over-commenting.
+   - Create a class that inherits from `Scene` with a descriptive name related to the animation content.
+   - Implement a complete `construct` method with all functionality fully implemented.
+   - Include any helper methods needed to organize the code and avoid repetition.
+   - Wrap the code with `if __name__ == "__main__":` and include the render call.
+   - Use proper error handling when appropriate.
 
-3. **Best Practices**:
-   - Make use of the latest version of Manim (Manim Community `v0.18.0` or higher).
-   - Use LaTeX for mathematical symbols and expressions (`MathTex`, `Tex`).
-   - Prefer smooth transitions (`Transform`, `ReplacementTransform`).
-   - Use built-in animation functions (`Create`, `Write`, `FadeOut`, etc.) and path animations (`MoveAlongPath`).
-   - Avoid overriding defaults unless necessary (keep code minimal).
+3. **COMPLETE Implementation Requirements**:
+   - NEVER use placeholder comments like "TODO", "implement this", or similar phrases.
+   - ALWAYS fully implement all functionality mentioned in the prompt.
+   - Break complex animations into manageable steps with clear transitions.
+   - Include all mathematical formulas, visual elements, and animations requested.
+   - For complex animations, create helper functions rather than leaving parts incomplete.
+   - If something seems ambiguous, make reasonable assumptions and implement it fully rather than leaving it incomplete.
 
-4. **Output Format**:
-   - Provide **only** the complete Python code, ready to be executed with `manim`.
-   - Do **not** include any additional text such as explanations, triple backticks, or annotations beyond comments within the code.
-   - Always check that your code is runnable and produces the intended animation.
+4. **Best Practices**:
+   - Use the latest version of Manim Community conventions (v0.18.0+).
+   - Use LaTeX (`MathTex`, `Tex`) for all mathematical expressions.
+   - Implement smooth transitions and proper animation timing.
+   - Include appropriate wait times between animation steps.
+   - Use color, positioning, and scaling to create visually appealing animations.
+   - Add camera movements when appropriate for dynamic animations.
 
-### Final Template:
+5. **Output Format**:
+   - Provide ONLY the complete Python code, ready to be executed with manim.
+   - DO NOT include triple backticks or explanations outside the code.
+   - Include helpful comments within the code to explain the animation flow.
+   - Ensure class and function names are descriptive and follow PEP8 naming conventions.
+
+Remember: Your output will be directly executed by users, so it must be COMPLETE, EXECUTABLE, and FULLY IMPLEMENTED. Do not leave any part of the animation as an exercise for the user.
+
+### Complete Working Template:
 ```python
 from manim import *
-
+import numpy as np  # Import additional libraries as needed
 
 class YourAnimation(Scene):
     def construct(self):
-        # Your animation code here
-        pass
-
+        # Complete implementation of the animation
+        # No TODOs or placeholders allowed
+        
+        # Example of fully implemented animation
+        title = Title("Complete Animation")
+        self.play(Write(title))
+        
+        # Mathematical expression with full implementation
+        formula = MathTex(r"f(x) = x^2 + 2x + 1")
+        self.play(Write(formula))
+        
+        # Make sure timing is appropriate
+        self.wait(1)
+        
+        # Example of a transformation with complete implementation
+        new_formula = MathTex(r"f(x) = (x + 1)^2")
+        self.play(TransformMatchingTex(formula, new_formula))
+        self.wait(2)
 
 if __name__ == "__main__":
     scene = YourAnimation()
     scene.render()
 ```
 
-Follow these instructions meticulously to ensure your Manim code is syntactically and structurally correct, requiring no modifications before rendering.  
+Always verify that your code is syntactically correct, handles all edge cases, and fully implements the requested animation without any placeholders or TODO comments."""
+        systemMessage = SystemMessagePromptTemplate.from_template(system_template)
+        human_template = "Question : {question}"
+        human_message = HumanMessagePromptTemplate.from_template(human_template)
+        chat_prompt = ChatPromptTemplate.from_messages([systemMessage, human_message])
 
----  
+        # Use the lazily loaded LLM
+        llm = get_llm()
 
-**Note**: If you find that certain concepts require complex code, generate one animation at a time, focusing on clarity over completeness. Do not overcomplicate the code unless explicitly requested.
-"""
+        # Create a new chain for each request to avoid memory leaks
+        llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
+        response = llm_chain.invoke({"question": prompt})
 
-        # Get the OpenAI client
-        client = get_openai_client()
-        
-        logger.info("Sending request to OpenAI API")
-        
-        # Make the request with streaming to reduce memory usage
-        try:
-            # Using streaming to reduce memory usage
-            accumulated_response = ""
-            
-            # Create the API request
-            response_stream = client.chat.completions.create(
-                model=DEFAULT_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                stream=True,
-                max_tokens=4000,
-                temperature=0.2
-            )
-            
-            # Process the streaming response
-            for chunk in response_stream:
-                if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    accumulated_response += content
-            
-            # Extract the final code from the model's output, removing thinking process
-            full_response = accumulated_response
-            result = extract_final_answer(full_response)
-            
-            logger.info(f"Final result length: {len(result)} chars (from full response of {len(full_response)} chars)")
-            
-        except Exception as api_error:
-            logger.error(f"Error during OpenAI API call: {str(api_error)}")
-            logger.error(traceback.format_exc())
-            result = f"# Error during code generation: {str(api_error)}\n# Please try again with a simpler prompt."
-        
+        # Extract the text from the response object and clear references
+        if isinstance(response, dict) and "text" in response:
+            result = response["text"]
+            # Clear references
+            response.clear()
+        else:
+            result = str(response)
+
         # Optionally, strip markdown code block markers
         if result.startswith("```python"):
             result = result[len("```python"):].strip()
         if result.endswith("```"):
             result = result[:-3].strip()
+
+        # Force garbage collection to free memory
+        chat_prompt = None
+        llm_chain = None
+        gc.collect()
         
-        # Force garbage collection
-        force_gc()
-        
-        process_time = time.time() - start_time
-        logger.info(f"Successfully generated code of length {len(result)} in {process_time:.2f} seconds")
+        logger.info(f"Successfully generated code of length {len(result)}")
         return result
 
     except Exception as e:
-        logger.error(f"Error generating code: {str(e)}")
-        logger.error(traceback.format_exc())
-        force_gc()
+        logger.error(f"Error generating code: {str(e)}", exc_info=True)
+        gc.collect()  # Try to free memory even on failure
         return f"// Error generating code: {str(e)}"
+    
 
 def improve_prompt(prompt):
-    """Improve a prompt using direct OpenAI API calls to avoid LangChain memory issues"""
     logger.info("improve_prompt function called")
-    log_memory_usage()
-    
     try: 
-        logger.info(f"Improving prompt of length {len(prompt)}")
-        
-        # Simplified system prompt to reduce memory usage
-        system_prompt = """
-As an assistant specializing in creating Manim 2D math animation code, your role is to refine and enhance the user's initial prompt, ensuring it's both clear and comprehensive. Here's how you'll proceed:
-
-### 1. Understand the User's Intent:
-   - Carefully analyze the user's original prompt to grasp they're trying to achieve with their animation.
-   - Identify key elements such as the mathematical concepts, visual effects, and animation sequences they're interested in.
-
-### 2. Identify Ambiguities and Missing Details:
-   - Pinpoint any parts of the prompt that are vague or lack specificity. This could include unspecified animations, unclear mathematical operations, or incomplete descriptions of visual elements.
-   - Determine what additional information is necessary to create a complete and functional Manim animation.
-
-### 3. Integrate User's Answers:
-   - Once hypothetical answers are provided, integrate this new information back into the refined prompt.
-   - Ensure that the revised prompt is detailed, specific, and includes all necessary components for generating the desired animation.
-
-### 4. Provide the Revised Prompt:
-   - Present the user with a clear and enhanced version of their original prompt, incorporating all new details and specifications.
-   - The revised prompt should be structured to directly guide the creation of code in the Manim library, minimizing ambiguity and ensuring all intended elements are included.
-
-### Final Task:
-   - DO NOT INCLUDE THE USER"S ORIGINAL PROMPT
-   - DO NOT GENERATE CODE JUST GENERATE AN IMRPOVISED PROMPT
-   - Take the given user's prompt and enrich it with all gathered information and specifics.
-   - Ensure the refined prompt is ready to be turned into a detailed and accurate Manim animation code, with no room for misinterpretation.
-   - Remember, your goal is to help the user articulate their vision in a way that allows for seamless translation into functional Manim code, focusing solely on generating the refined prompt.
-"""
-        
-        # Get the OpenAI client
-        client = get_openai_client()
-        
-        logger.info("Sending request to OpenAI API for prompt improvement")
-        
-        # Make the request with streaming to reduce memory usage
-        try:
-            # Using streaming to reduce memory usage
-            accumulated_response = ""
+        # Trim prompt if it's too long
+        if len(prompt) > 5000:
+            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to 5000 chars")
+            prompt = prompt[:5000]
             
-            # Create the API request
-            response_stream = client.chat.completions.create(
-                model=DEFAULT_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Prompt: {prompt}"}
-                ],
-                stream=True,
-                max_tokens=2000,
-                temperature=0.3
-            )
-            
-            # Process the streaming response
-            for chunk in response_stream:
-                if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    accumulated_response += content
-            
-            # Extract the final improved prompt from the model's output, removing thinking process
-            full_response = accumulated_response
-            improved = extract_final_answer(full_response)
-            
-            logger.info(f"Final improved prompt length: {len(improved)} chars (from full response of {len(full_response)} chars)")
-            
-        except Exception as api_error:
-            logger.error(f"Error during OpenAI API call for prompt improvement: {str(api_error)}")
-            logger.error(traceback.format_exc())
-            improved = f"Error improving prompt: {str(api_error)}. Please try again with a simpler description."
+        system_template = """
+As an expert assistant specializing in Manim animation code, your task is to transform vague or incomplete user prompts into highly detailed, specific instructions that will result in fully-implemented animation code with no TODOs or placeholders.
+
+### Your Transformation Process:
+
+### 1. Expand the Animation Scope:
+   - Identify the core animation concept in the user's prompt
+   - Add specific details about the visual elements that should appear (shapes, equations, text, etc.)
+   - Specify exact animations (fading, morphing, moving along paths, etc.)
+   - Include timing details (duration, pauses between steps)
+   - Add color specifications, positioning, and stylistic elements
+   - Ensure all mathematical notations or formulas are completely defined
+
+### 2. Technical Specifications:
+   - Include specific Manim objects to use (Circle, Square, MathTex, Axes, etc.)
+   - Specify animation methods (Create, Write, Transform, MoveAlongPath, etc.)
+   - Include details about camera movements if relevant
+   - Suggest specific coordinates or layouts
+   - Mention any required mathematical functions or transformations
+   - Include specific colors, sizes, and styling parameters
+
+### 3. Animation Sequence and Flow:
+   - Break down the animation into clear sequential steps
+   - Specify transitions between different elements
+   - Define how mathematical concepts should evolve or transform
+   - Ensure logical progression in educational content
+   - Include specific wait times between key animation points
+   - Define how complex elements should be built up step-by-step
+
+### 4. Provide a Complete Animation Blueprint:
+   - Structure your response as a clear, detailed specification
+   - Include all necessary information for implementation without guesswork
+   - Eliminate any ambiguities that could lead to placeholder code
+   - Provide specific values for parameters where needed (coordinates, sizes, colors, durations)
+   - Ensure each animation step is fully described with Manim terminology
+
+### Important Guidelines:
+   - DO NOT GENERATE CODE - only produce a detailed prompt
+   - DO NOT include the user's original prompt verbatim
+   - FOCUS on adding specific implementation details that eliminate the need for placeholders
+   - ASSUME the animation will be implemented exactly as you describe, so be comprehensive
+   - ENSURE your prompt would lead to code with no TODOs or "implement this later" comments
+   - Use proper Manim terminology that aligns with the latest Manim Community version
+
+Your goal is to create a prompt so detailed and specific that it eliminates any need for the developer to make significant decisions or leave parts unimplemented due to ambiguity."""
+        system_message = SystemMessagePromptTemplate.from_template(system_template)
+
+        human_template = "Prompt: {prompt}"
+        human_message = HumanMessagePromptTemplate.from_template(human_template)
+
+        chat_prompt = ChatPromptTemplate.from_messages([system_message, human_message])
         
-        # Force garbage collection
-        force_gc()
+        # Use the lazily loaded LLM
+        llm = get_llm()
+
+        # Create a new chain for each request
+        llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
+        response = llm_chain.invoke({"prompt": prompt})
         
-        logger.info(f"Successfully improved prompt from {len(prompt)} to {len(improved)} chars")
+        # Extract the text from the response object
+        if isinstance(response, dict) and "text" in response:
+            improved = response["text"]
+            # Clear references
+            response.clear()
+        else:
+            improved = str(response)
+            
+        # Clear references to help with garbage collection
+        chat_prompt = None
+        llm_chain = None
+        gc.collect()
+        
+        logger.info(f"Successfully improved prompt of length {len(improved)}")
         return improved.strip()
-        
     except Exception as e:
-        logger.error(f"Error in improve_prompt: {str(e)}")
-        logger.error(traceback.format_exc())
-        force_gc()
+        logger.error(f"Error in improve_prompt: {str(e)}", exc_info=True)
+        gc.collect()  # Try to free memory even on failure
         raise Exception(f"Failed to improve prompt: {str(e)}")

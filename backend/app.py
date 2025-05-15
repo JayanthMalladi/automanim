@@ -1,149 +1,177 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-import os
+from llm_generator import generate_manim_code, improve_prompt
 import logging
-import time
 import gc
-import psutil
-from llm_generator import generate_manim_code, improve_prompt, force_gc, log_memory_usage
+import time
+import threading
+import signal
+import os
+from functools import wraps
 
-app = Flask(__name__)
-CORS(app)
-
-# Configure logging
+# Setup logging
 logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                   format='%(asctime)s [%(levelname)s] %(message)s',
+                   handlers=[logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
-# Request tracking variables
+# Configure timeout for hanging requests
+TIMEOUT_SECONDS = 180
+
+def timeout_handler(signum, frame):
+    logger.error("Request processing timed out")
+    gc.collect()
+    raise TimeoutError("Request took too long to process")
+
+# Request timeout decorator
+def timeout_decorator(seconds):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Set the timeout handler
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(seconds)
+            try:
+                result = func(*args, **kwargs)
+                # Cancel the alarm if the function returns
+                signal.alarm(0)
+                return result
+            except Exception as e:
+                # Cancel the alarm if an exception is raised
+                signal.alarm(0)
+                raise e
+        return wrapper
+    return decorator
+
+app = Flask(__name__)
+# More permissive CORS configuration
+CORS(app, 
+     resources={r"/*": {"origins": "*"}}, 
+     supports_credentials=False,
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "OPTIONS"])
+
+# Add request tracking for diagnostics
 request_count = 0
 active_requests = 0
 
 @app.before_request
 def before_request():
-    """Log memory usage before each request"""
     global request_count, active_requests
     request_count += 1
     active_requests += 1
     logger.info(f"Request #{request_count} started. Active requests: {active_requests}")
-    force_gc()  # Force garbage collection before each request
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    logger.info(f"[REQUEST START] Memory usage: {mem_info.rss / 1024 / 1024:.2f} MB")
-    request.start_time = time.time()
 
 @app.after_request
 def after_request(response):
-    """Log request duration and memory usage after each request"""
     global active_requests
     active_requests -= 1
     logger.info(f"Request completed. Active requests: {active_requests}")
-    duration = time.time() - request.start_time
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    logger.info(f"[REQUEST END] Duration: {duration:.2f}s - Memory: {mem_info.rss / 1024 / 1024:.2f} MB")
-    force_gc()  # Force garbage collection after each request
+    gc.collect()  # Force garbage collection after each request
     return response
 
-@app.route('/api/improve_prompt', methods=['POST'])
-def improve_prompt_route():
-    """API endpoint to improve an animation prompt"""
-    start_time = time.time()
-    try:
-        data = request.get_json()
-        if not data or 'prompt' not in data:
-            return jsonify({'error': 'No prompt provided'}), 400
-
-        prompt_text = data['prompt']
-        logger.info(f"Received improve_prompt request with {len(prompt_text)} chars")
-        
-        if len(prompt_text.strip()) < 5:
-            return jsonify({'error': 'Prompt too short'}), 400
-        
-        # Log memory usage
-        log_memory_usage()
-        
-        # Call the LLM to improve the prompt
-        improved_prompt = improve_prompt(prompt_text)
-        
-        # Log processing time and memory
-        process_time = time.time() - start_time
-        logger.info(f"improve_prompt processed in {process_time:.2f} seconds")
-        log_memory_usage()
-        
-        return jsonify({'improved_prompt': improved_prompt})
-    
-    except Exception as e:
-        logger.error(f"Error in improve_prompt endpoint: {str(e)}", exc_info=True)
-        force_gc()  # Force GC on error
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/generate', methods=['POST'])
+@app.route('/generate', methods=['POST'])
+@timeout_decorator(TIMEOUT_SECONDS)
 def generate():
-    """API endpoint to generate Manim code"""
     start_time = time.time()
     try:
+        # Log request information
+        logger.info(f"Received generate request from origin: {request.headers.get('Origin', 'Unknown')}")
+        logger.info(f"Request headers: {dict(request.headers)}")
+        
+        # Get JSON data
         data = request.get_json()
-        if not data or 'prompt' not in data:
+        if not data:
+            logger.error("No JSON data received in generate endpoint")
+            return jsonify({'error': 'No JSON data received'}), 400
+            
+        prompt = data.get('prompt', '')
+        if not prompt:
+            logger.error("No prompt provided in generate endpoint")
             return jsonify({'error': 'No prompt provided'}), 400
-
-        prompt_text = data['prompt']
-        logger.info(f"Received generation request with {len(prompt_text)} chars")
+            
+        logger.info(f"Processing prompt: {prompt[:50]}...")
+        code = generate_manim_code(prompt)
+        processing_time = time.time() - start_time
+        logger.info(f"Successfully generated code in {processing_time:.2f} seconds")
         
-        if len(prompt_text.strip()) < 5:
-            return jsonify({'error': 'Prompt too short'}), 400
-        
-        # Log memory usage
-        log_memory_usage()
-        
-        # Call the LLM to generate Manim code
-        manim_code = generate_manim_code(prompt_text)
-        
-        # Log processing time and memory
-        process_time = time.time() - start_time
-        logger.info(f"Generation processed in {process_time:.2f} seconds")
-        log_memory_usage()
-        
-        return jsonify({'manim_code': manim_code})
-    
+        gc.collect()  # Clean up memory
+        return jsonify({'code': code})
+    except TimeoutError as e:
+        logger.error(f"Request timed out: {str(e)}")
+        gc.collect()  # Try to clean up memory
+        return jsonify({'error': 'Request timed out', 'code': '// Error: The request took too long to process. Please try with a simpler prompt.'}), 408
     except Exception as e:
         logger.error(f"Error in generate endpoint: {str(e)}", exc_info=True)
-        force_gc()  # Force GC on error
+        gc.collect()  # Try to clean up memory
+        return jsonify({'error': str(e), 'code': f"// Error generating code: {str(e)}"}), 500
+
+
+@app.route('/improve_prompt', methods=['POST'])
+@timeout_decorator(TIMEOUT_SECONDS)
+def improve_prompt_route():
+    start_time = time.time()
+    try:
+        logger.info(f"Received improve_prompt request from origin: {request.headers.get('Origin', 'Unknown')}")
+        
+        data = request.get_json()
+        if not data:
+            logger.error("No JSON data received in improve_prompt endpoint")
+            return jsonify({'error': 'No JSON data received'}), 400
+        
+        prompt = data.get('prompt', '')
+        if not prompt:
+            logger.error("No prompt provided in improve_prompt endpoint")
+            return jsonify({'error': 'No prompt provided'}), 400
+            
+        logger.info(f"Processing prompt for improvement: {prompt[:50]}...")
+        improved = improve_prompt(prompt)
+        processing_time = time.time() - start_time
+        logger.info(f"Successfully improved prompt in {processing_time:.2f} seconds")
+        
+        gc.collect()  # Clean up memory
+        return jsonify({'improved_prompt': improved})
+    except TimeoutError as e:
+        logger.error(f"Request timed out: {str(e)}")
+        gc.collect()  # Try to clean up memory
+        return jsonify({'error': 'Request timed out'}), 408
+    except Exception as e:
+        logger.error(f"Error in improve_prompt_route: {str(e)}", exc_info=True)
+        gc.collect()  # Try to clean up memory
         return jsonify({'error': str(e)}), 500
 
-# Health check endpoint
-@app.route('/api/health', methods=['GET'])
+@app.route('/health', methods=['GET'])
 def health_check():
-    """Simple health check endpoint"""
+    # Include memory and request info in health check
+    import psutil
     process = psutil.Process(os.getpid())
     memory_info = process.memory_info()
+    memory_mb = memory_info.rss / (1024 * 1024)
+    
     return jsonify({
-        'status': 'healthy', 
-        'memory_usage_mb': memory_info.rss / 1024 / 1024,
+        'status': 'ok',
+        'memory_usage_mb': round(memory_mb, 2),
         'active_requests': active_requests,
-        'total_requests': request_count,
-        'uptime': time.time()
+        'total_requests': request_count
     })
 
-# Stats endpoint for more detailed metrics
-@app.route('/api/stats', methods=['GET'])
+@app.route('/stats', methods=['GET'])
 def stats():
-    """More detailed stats endpoint"""
+    # More detailed stats endpoint
+    import psutil
     process = psutil.Process(os.getpid())
     memory_info = process.memory_info()
     
     return jsonify({
-        'memory_usage_mb': memory_info.rss / 1024 / 1024,
+        'memory': {
+            'rss_mb': round(memory_info.rss / (1024 * 1024), 2),
+            'vms_mb': round(memory_info.vms / (1024 * 1024), 2),
+        },
         'cpu_percent': process.cpu_percent(),
-        'active_requests': active_requests,
-        'total_requests': request_count,
         'threads': len(process.threads()),
-        'open_files': len(process.open_files()),
-        'connections': len(process.connections())
+        'active_requests': active_requests,
+        'total_requests': request_count
     })
 
 if __name__ == '__main__':
-    # Force garbage collection at startup
-    force_gc()
-    # Run the Flask app
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(port=5000)
