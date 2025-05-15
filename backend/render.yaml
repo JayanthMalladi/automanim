@@ -3,7 +3,7 @@ services:
     name: automanim-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 300 --workers=2 --threads=2 --worker-class=gthread --log-level info
+    startCommand: gunicorn app:app --timeout 600 --workers=1 --threads=4 --worker-class=gthread --max-requests 10 --max-requests-jitter 5 --log-level info
     plan: standard # Use a higher tier plan with more resources
     envVars:
       - key: OPENROUTER_API_KEY
@@ -13,6 +13,10 @@ services:
       - key: DEFAULT_MODEL
         value: deepseek/deepseek-prover-v2:free 
       - key: WEB_CONCURRENCY
-        value: 2
+        value: 1
       - key: PYTHON_MAX_THREADS
-        value: 6 
+        value: 4
+      - key: MALLOC_TRIM_THRESHOLD_
+        value: 131072 # Memory allocation optimization
+      - key: PYTHONMALLOC
+        value: malloc 

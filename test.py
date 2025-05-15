@@ -1,90 +1,127 @@
 from manim import *
 import numpy as np
+from sympy import isprime
 
-class TokenEmbeddingVisualization(ThreeDScene):
+class PrimeSpiralAnimation(Scene):
     def construct(self):
-        # Step 1: Show the sentence "This is embedding" (Text) centered, wait 1 second.
-        sentence = Text("This is embedding", font_size=DEFAULT_FONT_SIZE).shift(UP * 1.5)
-        self.play(Write(sentence), run_time=1)
+        # 1. Background Setup
+        title = Text(
+            "Prime Numbers: A Spiraling Journey", 
+            font_size=48, 
+            font="Times New Roman", 
+            color="#33ff33"
+        ).to_edge(UP)
+        subtitle = Text(
+            "Visualizing the Distribution of Primes", 
+            font_size=36, 
+            font="Times New Roman", 
+            color="#33ff33"
+        ).next_to(title, DOWN, buff=0.5)
+        self.play(FadeIn(title))
+        self.wait(0.5)
+        self.play(FadeIn(subtitle))
         self.wait(1)
 
-        # Step 2: Break the sentence into 3 tokens ("This", "is", "embedding").
-        # Place horizontally, spaced apart, each in its color.
-        tokens = VGroup(
-            MathTex(r"\text{This}", color=RED_A),
-            MathTex(r"\text{is}", color=GREEN_A),
-            MathTex(r"\text{embedding}", color=BLUE_A)
-        ).arrange(RIGHT, buff=1.2).shift(UP * 1.5)
-
-        # Animations: Transform sentence into tokens with FadeOut of the original and FadeIn of tokens.
-        # The tokens end up spread just below the original sentence position (2 seconds).
-        self.play(
-            FadeOut(sentence),
-            FadeIn(tokens),
-            run_time=2
+        # 2. Coordinate System Introduction (Polar Grid)
+        polar_plane = PolarPlane(
+            azimuth_units="degrees",
+            size=6,
+            azimuth_label_font_size=20,
+            radius_config={"font_size": 20, "color": "#555555"},
+            background_line_style={
+                "stroke_color": "#333333",
+                "stroke_width": 1,
+            }
         )
-        self.wait(0.5)
-
-        # Step 3: Fade in the 3D axes at the center of the scene (1 second).
-        axes = ThreeDAxes(
-            x_range=[-2, 2], y_range=[-2, 2], z_range=[-2, 2],
-            axis_config={"color": WHITE, "stroke_width": 2},
-        )
-        axes_labels = VGroup(
-            MathTex("X").next_to(axes.x_axis.get_end(), RIGHT * 0.2),
-            MathTex("Y").next_to(axes.y_axis.get_end(), UP * 0.2),
-            MathTex("Z").next_to(axes.z_axis.get_end(), OUT * 0.2),
-        )
-        axes_group = VGroup(axes, axes_labels).scale(0.8)
-
-        self.play(Create(axes_group), run_time=1)
-        self.wait(0.5)
-
-        # Step 3 (cont.): Pivot into 3D view (2 seconds).
-        # Move camera to a 3D perspective (elevation=-30°, azimuth=60°).
-        self.move_camera(
-            phi=60 * DEGREES,
-            theta=-30 * DEGREES,
-            run_time=2
-        )
-        self.wait(0.5)
-
-        # Step 4: Plot each vector to its position (GrowArrow).
-        # Vectors are represented as Arrows from the origin to their coordinates.
-        vectors = [
-            {"token": tokens[0], "vec": np.array([1, 0.5, 1]), "color": RED_A},
-            {"token": tokens[1], "vec": np.array([-1, 0.5, 0.5]), "color": GREEN_A},
-            {"token": tokens[2], "vec": np.array([0, 1, -1]), "color": BLUE_A},
-        ]
-        vec_objs = []
-        vec_labels = []
-        for vec_info in vectors:
-            vec_obj = Arrow(
-                start=ORIGIN, end=vec_info["vec"],
-                color=vec_info["color"],
-                stroke_width=6,
-                buff=0,
-                tip_length=0.2
-            )
-            vec_label = MathTex(vec_info["token"].tex_string, color=vec_info["color"], font_size=24).move_to(vec_info["vec"] * 1.15)
-            vec_label.add_background_rectangle(opacity=0.6, buff=0.05)
-            vec_objs.append(vec_obj)
-            vec_labels.append(vec_label)
-
-        # Step 5: One by one, plot each vector to its position and add labels to the vector tips.
-        # First, "This" vector, label (1 second).
-        self.play(GrowArrow(vec_objs[0]), run_time=1)
-        self.play(FadeIn(vec_labels[0]), run_time=1)
-        # Then, "is" vector, label (1 second).
-        self.play(GrowArrow(vec_objs[1]), run_time=1)
-        self.play(FadeIn(vec_labels[1]), run_time=1)
-        # Finally, "embedding" vector, label (1 second).
-        self.play(GrowArrow(vec_objs[2]), run_time=1)
-        self.play(FadeIn(vec_labels[2]), run_time=1)
-
-        # Step 6: Pause for 1 second.
+        polar_plane.add_coordinates()
+        self.play(Create(polar_plane), run_time=2)
         self.wait(1)
+
+        # 3. Number Spiral Construction
+        moving_dot = Dot(radius=0.05, color=WHITE)
+        self.play(FadeIn(moving_dot))
+
+        for n in range(1, 101):
+            radius = np.sqrt(n)
+            angle = 2 * np.pi * np.sqrt(n)
+            x = radius * np.cos(angle)
+            y = radius * np.sin(angle)
+            next_position = np.array([x, y, 0])
+            
+            if isprime(n):
+                new_dot = Dot(next_position, radius=0.1, color="#FF6347")
+                self.play(
+                    moving_dot.animate.move_to(next_position),
+                    FadeIn(new_dot),
+                    run_time=0.05
+                )
+            else:
+                new_dot = Dot(next_position, radius=0.05, color=WHITE).set_opacity(0.3)
+                self.play(
+                    moving_dot.animate.move_to(next_position),
+                    FadeIn(new_dot),
+                    run_time=0.05
+                )
+            self.wait(0.05)
+        self.wait(1)
+        
+        # Highlighting primes
+        primes = [n for n in range(1, 101) if isprime(n)]
+        for n in primes:
+            radius = np.sqrt(n)
+            angle = 2 * np.pi * np.sqrt(n)
+            x = radius * np.cos(angle)
+            y = radius * np.sin(angle)
+            prime_dot = Dot(np.array([x, y, 0]), radius=0.1, color="#FF6347")
+            highlight_circle = Circle(radius=0.15, color=WHITE, fill_opacity=0.5).move_to(prime_dot)
+            number_label = Text(str(n), font_size=24, color="#FFD700").next_to(prime_dot, UP, buff=0.1)
+            self.play(FadeIn(highlight_circle), FadeIn(number_label), run_time=0.2)
+            self.play(FadeOut(highlight_circle), FadeOut(number_label), run_time=0.05)
+        
+        # 5. Mathematical Analysis
+        formula = MathTex(r"f(n) = \sqrt{n} \cdot e^{i \cdot 2 \pi \cdot \sqrt{n}}", color="#33ff33", font_size=36)
+        formula.move_to([0, -2, 0])
+        self.play(FadeIn(formula))
+        self.wait(1)
+        
+        # Emphasize sqrt(n)
+        sqrt_part = formula.submobjects[0][3:8]
+        self.play(sqrt_part.animate.set_color("#FF6347"), sqrt_part.animate.scale(1.2))
+        self.wait(1)
+        self.play(sqrt_part.animate.set_color("#33ff33"), sqrt_part.animate.scale(1/1.2))
+        self.wait(0.5)
+        
+        # Emphasize 2 * pi * sqrt(n)
+        angle_part = formula.submobjects[0][12:21]
+        self.play(angle_part.animate.set_color("#1E90FF"), angle_part.animate.scale(1.2))
+        self.wait(1)
+        self.play(angle_part.animate.set_color("#33ff33"), angle_part.animate.scale(1/1.2))
+        self.wait(0.5)
+        self.play(FadeOut(formula))
+        
+        # 6. Conclusion
+        conclusion_text = Text("Prime Numbers Never End", font_size=48, color="#FFFFFF").move_to([0, -2, 0])
+        self.play(FadeIn(conclusion_text))
+        for i in range(101, 200):  # Extending the spiral for effect
+            radius = np.sqrt(i)
+            angle = 2 * np.pi * np.sqrt(i)
+            x = radius * np.cos(angle)
+            y = radius * np.sin(angle)
+            next_position = np.array([x, y, 0])
+            if isprime(i):
+                new_dot = Dot(next_position, radius=0.1, color="#FF6347")
+                self.play(FadeIn(new_dot), run_time=0.05)
+            else:
+                new_dot = Dot(next_position, radius=0.05, color=WHITE).set_opacity(0.3)
+                self.play(FadeIn(new_dot), run_time=0.05)
+            self.wait(0.05)
+        
+        # 7. End
+        everything_except_titles = VGroup(*[mob for mob in self.mobjects if mob not in [title, subtitle]])
+        self.play(FadeOut(everything_except_titles))
+        self.play(FadeOut(title), FadeOut(subtitle))
+
 
 if __name__ == "__main__":
-    scene = TokenEmbeddingVisualization()
+    scene = PrimeSpiralAnimation()
     scene.render()

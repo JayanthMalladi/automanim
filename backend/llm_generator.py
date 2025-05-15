@@ -7,10 +7,15 @@ from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, H
 import os
 import gc
 import logging
+import resource
+import time
+import traceback
+import psutil
 from dotenv import load_dotenv
 
 # Setup logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,6 +28,21 @@ DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-prover-v2:free")
 # Global LLM instance
 _llm_instance = None
 
+# Memory management helper function
+def log_memory_usage():
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    memory_mb = memory_info.rss / (1024 * 1024)
+    logger.info(f"Current memory usage: {memory_mb:.2f} MB")
+    return memory_mb
+
+# Force garbage collection and report memory
+def force_gc():
+    before = log_memory_usage()
+    gc.collect()
+    after = log_memory_usage()
+    logger.info(f"Garbage collection freed {before - after:.2f} MB")
+
 def get_llm():
     """Lazy-load the LLM instance only when needed"""
     global _llm_instance
@@ -32,7 +52,7 @@ def get_llm():
                 openai_api_key=OPENROUTER_API_KEY,
                 openai_api_base=OPENROUTER_API_BASE,
                 model_name=DEFAULT_MODEL,
-                request_timeout=180  # Increase timeout
+                request_timeout=300  # Increase timeout to 5 minutes
             )
             logger.info("LLM instance created successfully")
         except Exception as e:
@@ -41,11 +61,15 @@ def get_llm():
     return _llm_instance
 
 def generate_manim_code(prompt):
+    start_time = time.time()
+    log_memory_usage()
+    
     try:
-        # Trim prompt if it's too long
-        if len(prompt) > 5000:
-            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to 5000 chars")
-            prompt = prompt[:5000]
+        # Trim prompt if it's too long - more aggressive trimming to save memory
+        max_prompt_length = 4000  # Limit max prompt length
+        if len(prompt) > max_prompt_length:
+            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to {max_prompt_length} chars")
+            prompt = prompt[:max_prompt_length]
             
         logger.info(f"Generating Manim code for prompt of length {len(prompt)}")
         
@@ -121,50 +145,94 @@ Always verify that your code is syntactically correct, handles all edge cases, a
         systemMessage = SystemMessagePromptTemplate.from_template(system_template)
         human_template = "Question : {question}"
         human_message = HumanMessagePromptTemplate.from_template(human_template)
+        
+        # Use a shorter version for complex prompts to save memory
+        if len(prompt) > 1500:
+            logger.info("Using shorter system template to save memory")
+            system_template = """
+Generate complete, ready-to-run Manim code for an educational animation. Include all imports, necessary functions, and implement ALL requirements fully without TODOs or placeholders. Keep code clean, efficient, and follow best practices.
+
+IMPORTANT:
+- Use `from manim import *` and any other needed imports
+- Create a complete Scene class with a thorough construct method
+- Fully implement all requested features with NO placeholders
+- Include proper timing with self.wait() between animation steps
+- Use descriptive comments to explain the steps
+- Make it directly executable with the render call at the end
+"""
+            systemMessage = SystemMessagePromptTemplate.from_template(system_template)
+        
         chat_prompt = ChatPromptTemplate.from_messages([systemMessage, human_message])
 
-        # Use the lazily loaded LLM
+        # Log memory usage at key points
+        log_memory_usage()
+        
+        # Use a timeout to prevent hanging
         llm = get_llm()
-
+        
         # Create a new chain for each request to avoid memory leaks
         llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"question": prompt})
+        
+        # Set resource limits to avoid memory issues
+        # soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        # resource.setrlimit(resource.RLIMIT_AS, (4 * 1024 * 1024 * 1024, hard))  # 4 GB memory limit
+        
+        logger.info("Sending request to LLM API")
+        try:
+            response = llm_chain.invoke({"question": prompt})
+            logger.info("Response received from LLM API")
+            
+            # Extract the text from the response object and clear references
+            if isinstance(response, dict) and "text" in response:
+                result = response["text"]
+                # Clear references
+                response.clear()
+            else:
+                result = str(response)
 
-        # Extract the text from the response object and clear references
-        if isinstance(response, dict) and "text" in response:
-            result = response["text"]
-            # Clear references
-            response.clear()
-        else:
-            result = str(response)
-
-        # Optionally, strip markdown code block markers
-        if result.startswith("```python"):
-            result = result[len("```python"):].strip()
-        if result.endswith("```"):
-            result = result[:-3].strip()
-
+            # Optionally, strip markdown code block markers
+            if result.startswith("```python"):
+                result = result[len("```python"):].strip()
+            if result.endswith("```"):
+                result = result[:-3].strip()
+                
+            # Check if the result is empty or too short (likely an error)
+            if len(result) < 50:
+                logger.warning(f"Generated code is suspiciously short ({len(result)} chars)")
+                if len(result) < 10:
+                    result = "# Error: Generated code was too short or empty. Please try again with a simpler prompt."
+        except Exception as e:
+            logger.error(f"Error during LLM invocation: {str(e)}")
+            result = f"# Error during code generation: {str(e)}\n# Please try again with a simpler prompt."
+            
         # Force garbage collection to free memory
         chat_prompt = None
         llm_chain = None
-        gc.collect()
+        systemMessage = None
+        human_message = None
+        force_gc()
         
-        logger.info(f"Successfully generated code of length {len(result)}")
+        process_time = time.time() - start_time
+        logger.info(f"Successfully generated code of length {len(result)} in {process_time:.2f} seconds")
         return result
 
     except Exception as e:
         logger.error(f"Error generating code: {str(e)}", exc_info=True)
-        gc.collect()  # Try to free memory even on failure
+        logger.error(traceback.format_exc())
+        force_gc()  # Try to free memory even on failure
         return f"// Error generating code: {str(e)}"
     
 
 def improve_prompt(prompt):
     logger.info("improve_prompt function called")
+    log_memory_usage()
+    
     try: 
-        # Trim prompt if it's too long
-        if len(prompt) > 5000:
-            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to 5000 chars")
-            prompt = prompt[:5000]
+        # Trim prompt if it's too long - more aggressive trimming to save memory
+        max_prompt_length = 4000  # Limit max prompt length
+        if len(prompt) > max_prompt_length:
+            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to {max_prompt_length} chars")
+            prompt = prompt[:max_prompt_length]
             
         system_template = """
 As an expert assistant specializing in Manim animation code, your task is to transform vague or incomplete user prompts into highly detailed, specific instructions that will result in fully-implemented animation code with no TODOs or placeholders.
@@ -213,34 +281,69 @@ As an expert assistant specializing in Manim animation code, your task is to tra
 Your goal is to create a prompt so detailed and specific that it eliminates any need for the developer to make significant decisions or leave parts unimplemented due to ambiguity."""
         system_message = SystemMessagePromptTemplate.from_template(system_template)
 
+        # For longer prompts, use a simpler system message to save memory
+        if len(prompt) > 1500:
+            logger.info("Using shorter system template to save memory")
+            system_template = """
+Transform vague animation prompts into detailed specifications that can be fully implemented.
+
+Make sure to:
+1. Add specific visual elements, animations, and timing
+2. Include technical details (objects, methods, coordinates)
+3. Specify the sequence of animation steps
+4. Eliminate all ambiguity that could lead to incomplete implementations
+
+DO NOT generate code - provide a comprehensive blueprint using proper Manim terminology.
+"""
+            system_message = SystemMessagePromptTemplate.from_template(system_template)
+
         human_template = "Prompt: {prompt}"
         human_message = HumanMessagePromptTemplate.from_template(human_template)
 
         chat_prompt = ChatPromptTemplate.from_messages([system_message, human_message])
+        
+        # Log memory usage at key points
+        log_memory_usage()
         
         # Use the lazily loaded LLM
         llm = get_llm()
 
         # Create a new chain for each request
         llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
-        response = llm_chain.invoke({"prompt": prompt})
         
-        # Extract the text from the response object
-        if isinstance(response, dict) and "text" in response:
-            improved = response["text"]
-            # Clear references
-            response.clear()
-        else:
-            improved = str(response)
+        logger.info("Sending request to LLM API for prompt improvement")
+        try:
+            response = llm_chain.invoke({"prompt": prompt})
+            logger.info("Response received from LLM API")
+            
+            # Extract the text from the response object
+            if isinstance(response, dict) and "text" in response:
+                improved = response["text"]
+                # Clear references
+                response.clear()
+            else:
+                improved = str(response)
+                
+            # Check if result is too short (likely an error)
+            if len(improved) < 50:
+                logger.warning(f"Improved prompt is suspiciously short ({len(improved)} chars)")
+                if len(improved) < 10:
+                    improved = "Error: Could not improve the prompt. Please try with a different description."
+        except Exception as e:
+            logger.error(f"Error during LLM invocation for prompt improvement: {str(e)}")
+            improved = f"Error improving prompt: {str(e)}. Please try again with a simpler description."
             
         # Clear references to help with garbage collection
         chat_prompt = None
         llm_chain = None
-        gc.collect()
+        system_message = None
+        human_message = None
+        force_gc()
         
-        logger.info(f"Successfully improved prompt of length {len(improved)}")
+        logger.info(f"Successfully improved prompt from {len(prompt)} to {len(improved)} chars")
         return improved.strip()
     except Exception as e:
         logger.error(f"Error in improve_prompt: {str(e)}", exc_info=True)
-        gc.collect()  # Try to free memory even on failure
+        logger.error(traceback.format_exc())
+        force_gc()  # Try to free memory even on failure
         raise Exception(f"Failed to improve prompt: {str(e)}")
