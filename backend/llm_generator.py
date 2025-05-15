@@ -5,7 +5,12 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 import os
+import gc
+import logging
 from dotenv import load_dotenv
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -22,15 +27,28 @@ def get_llm():
     """Lazy-load the LLM instance only when needed"""
     global _llm_instance
     if _llm_instance is None:
-        _llm_instance = ChatOpenAI(
-            openai_api_key=OPENROUTER_API_KEY,
-            openai_api_base=OPENROUTER_API_BASE,
-            model_name=DEFAULT_MODEL
-        )
+        try:
+            _llm_instance = ChatOpenAI(
+                openai_api_key=OPENROUTER_API_KEY,
+                openai_api_base=OPENROUTER_API_BASE,
+                model_name=DEFAULT_MODEL,
+                request_timeout=180  # Increase timeout
+            )
+            logger.info("LLM instance created successfully")
+        except Exception as e:
+            logger.error(f"Error creating LLM instance: {str(e)}")
+            raise
     return _llm_instance
 
 def generate_manim_code(prompt):
     try:
+        # Trim prompt if it's too long
+        if len(prompt) > 5000:
+            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to 5000 chars")
+            prompt = prompt[:5000]
+            
+        logger.info(f"Generating Manim code for prompt of length {len(prompt)}")
+        
         system_template = """
 You are an AI specialized in generating Manim code specifically designed to create educational animations, similar to those seen in 3Blue1Brown's videos. Your primary objective is to provide clean, functional, and fully executable Manim code without any additional text or explanations. 
 
@@ -86,28 +104,46 @@ Follow these instructions meticulously to ensure your Manim code is syntacticall
         # Use the lazily loaded LLM
         llm = get_llm()
 
+        # Create a new chain for each request to avoid memory leaks
         llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
         response = llm_chain.invoke({"question": prompt})
 
-        # Extract the text from the response object
+        # Extract the text from the response object and clear references
         if isinstance(response, dict) and "text" in response:
-            response = response["text"]
-
+            result = response["text"]
+            # Clear references
+            response.clear()
+        else:
+            result = str(response)
+            
         # Optionally, strip markdown code block markers
-        if response.startswith("```python"):
-            response = response[len("```python"):].strip()
-        if response.endswith("```"):
-            response = response[:-3].strip()
+        if result.startswith("```python"):
+            result = result[len("```python"):].strip()
+        if result.endswith("```"):
+            result = result[:-3].strip()
 
-        return response
+        # Force garbage collection to free memory
+        chat_prompt = None
+        llm_chain = None
+        gc.collect()
+        
+        logger.info(f"Successfully generated code of length {len(result)}")
+        return result
 
     except Exception as e:
+        logger.error(f"Error generating code: {str(e)}", exc_info=True)
+        gc.collect()  # Try to free memory even on failure
         return f"// Error generating code: {str(e)}"
     
 
 def improve_prompt(prompt):
-    print("improve_prompt function called")
+    logger.info("improve_prompt function called")
     try: 
+        # Trim prompt if it's too long
+        if len(prompt) > 5000:
+            logger.warning(f"Prompt too long ({len(prompt)} chars), trimming to 5000 chars")
+            prompt = prompt[:5000]
+            
         system_template = """
 As an assistant specializing in creating Manim 2D math animation code, your role is to refine and enhance the user's initial prompt, ensuring it's both clear and comprehensive. Here's how you'll proceed:
 
@@ -144,16 +180,26 @@ As an assistant specializing in creating Manim 2D math animation code, your role
         # Use the lazily loaded LLM
         llm = get_llm()
 
+        # Create a new chain for each request
         llm_chain = LLMChain(prompt=chat_prompt, llm=llm)
         response = llm_chain.invoke({"prompt": prompt})
         
         # Extract the text from the response object
         if isinstance(response, dict) and "text" in response:
             improved = response["text"]
+            # Clear references
+            response.clear()
         else:
             improved = str(response)
-            
+        
+        # Clear references to help with garbage collection
+        chat_prompt = None
+        llm_chain = None
+        gc.collect()
+        
+        logger.info(f"Successfully improved prompt of length {len(improved)}")
         return improved.strip()
     except Exception as e:
-        print(f"Error in improve_prompt: {str(e)}")
+        logger.error(f"Error in improve_prompt: {str(e)}", exc_info=True)
+        gc.collect()  # Try to free memory even on failure
         raise Exception(f"Failed to improve prompt: {str(e)}")

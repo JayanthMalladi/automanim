@@ -1,80 +1,133 @@
 from manim import *
 
 
-class BouncingBall(Scene):
+class GroversAlgorithm(Scene):
     def construct(self):
-        # Define the ground
-        ground = Line(LEFT * 5, RIGHT * 5, color=WHITE)
-        ground.shift(DOWN * 2)
+        # Define the states and their initial amplitudes
+        states = ["|00⟩", "|01⟩", "|10⟩", "|11⟩"]
+        initial_amplitudes = [1/2, 1/2, 1/2, 1/2]
+        amplitudes = initial_amplitudes.copy()
 
-        # Define the ball
-        ball = Circle(radius=0.2, color=BLUE, fill_opacity=1)
-        ball.move_to(UP * 2 + LEFT * 2)
+        # Create initial state bars with labels
+        bars = VGroup(*[Rectangle(height=amp, width=0.5, fill_color=GREEN, fill_opacity=1, stroke_color=WHITE)
+                        for amp in initial_amplitudes])
+        labels = VGroup(*[Text(state).scale(0.5) for state in states])
+        labels.next_to(bars, DOWN, buff=0.1)
 
-        # Define the shadow
-        shadow = Circle(radius=0.2, color=BLACK, fill_opacity=0.2)
-        shadow.move_to(ground.get_center() + (ball.get_center() - ground.get_center())[0] * RIGHT)
+        # Position the bars and labels
+        bars.arrange(RIGHT, buff=1.5)
+        bars.move_to(ORIGIN)
+        labels.move_to(bars.get_center() + 0.6 * DOWN)
 
-        # Add the ground, ball, and shadow to the scene
-        self.add(ground, ball, shadow)
+        # Write the initial state
+        self.play(Create(bars), Write(labels))
+        self.wait(1)
 
-        # Define the physics parameters
-        g = 9.8  # acceleration due to gravity (m/s^2)
-        e = 0.7  # coefficient of restitution (energy loss)
-        v0 = 0   # initial velocity (m/s)
-        h0 = 4   # initial height (m)
-        t = 0    # time (s)
-        dt = 0.01  # time step (s)
+        # Step 1: Apply the oracle (flip the amplitude of |11⟩)
+        oracle_label = Text("Oracle (flips |11⟩)").scale(0.8).to_edge(UP)
+        self.play(Write(oracle_label))
+        self.wait(0.5)
 
-        # Define the initial position and velocity
-        y = h0
-        v = v0
+        # Find the target bar (|11⟩ is the 4th bar; index 3)
+        target_bar = bars[3]
+        new_target_bar = Rectangle(
+            height=-amplitudes[3], width=0.5, fill_color=RED, fill_opacity=1, stroke_color=WHITE
+        ).move_to(target_bar.get_center())
+        amplitudes[3] *= -1
 
-        # Define the horizontal motion parameters
-        x = -2
-        vx = 0.5
+        self.play(Transform(target_bar, new_target_bar))
+        self.wait(1)
+        self.play(FadeOut(oracle_label))
+        self.wait(0.5)
 
-        # Define the animation
-        while y > 0 or v > 0:
-            # Update the position and velocity
-            y += v * dt - 0.5 * g * dt ** 2
-            v -= g * dt
+        # Step 2: Apply the diffusion operator (reflect around mean)
+        diffusion_label = Text("Diffusion (reflect around mean)").scale(0.8).to_edge(UP)
+        self.play(Write(diffusion_label))
+        self.wait(0.5)
 
-            # Check for collision with the ground
-            if y < 0:
-                y = -y
-                v = -v * e
+        # Compute the mean amplitude and new amplitudes after reflection
+        mean = sum(amplitudes) / len(amplitudes)
+        new_amplitudes = [2 * mean - amp for amp in amplitudes]
 
-            # Update the horizontal position
-            x += vx * dt
+        # Create new bars to reflect the amplitudes
+        new_bars = VGroup()
+        new_positions = bars.get_center()
+        for i, (bar, amp) in enumerate(zip(bars, new_amplitudes)):
+            color = GREEN if amp > 0 else RED
+            new_bar = Rectangle(
+                height=abs(amp), width=0.5, fill_color=color, fill_opacity=1, stroke_color=WHITE
+            ).move_to(bar.get_center())
+            if amp < 0:
+                new_bar.shift((abs(amp) / 2 + bar.get_height() / 2) * DOWN)
+            new_bars.add(new_bar)
 
-            # Move the ball and shadow
-            new_ball_position = UP * y + RIGHT * x
-            new_shadow_position = ground.get_center() + (new_ball_position - ground.get_center())[0] * RIGHT
+        self.play(Transform(bars, new_bars))
+        amplitudes = new_amplitudes
+        self.wait(1)
+        self.play(FadeOut(diffusion_label))
+        self.wait(0.5)
 
-            # Scale the shadow based on the height of the ball
-            shadow_scale = 1 - y / h0
-            shadow.scale(shadow_scale / shadow.width)
+        # Step 3: Repeat the oracle and diffusion (second iteration)
+        # Oracle
+        oracle_label = Text("Oracle (flips |11⟩ again)").scale(0.8).to_edge(UP)
+        self.play(Write(oracle_label))
+        self.wait(0.5)
+        target_bar = bars[3]
+        new_target_bar = Rectangle(
+            height=-amplitudes[3], width=0.5, fill_color=GREEN if -amplitudes[3] > 0 else RED,
+            fill_opacity=1, stroke_color=WHITE
+        ).move_to(target_bar.get_center())
+        if -amplitudes[3] < 0:
+            new_target_bar.shift((abs(amplitudes[3]) / 2 + target_bar.get_height() / 2) * DOWN)
+        amplitudes[3] *= -1
+        self.play(Transform(target_bar, new_target_bar))
+        self.wait(1)
+        self.play(FadeOut(oracle_label))
+        self.wait(0.5)
 
-            # Animate the ball and shadow
-            self.play(
-                ball.animate.move_to(new_ball_position),
-                shadow.animate.move_to(new_shadow_position),
-                run_time=dt,
-                rate_func=linear
-            )
+        # Diffusion
+        diffusion_label = Text("Diffusion (reflect around mean again)").scale(0.8).to_edge(UP)
+        self.play(Write(diffusion_label))
+        self.wait(0.5)
 
-            # Update the time
-            t += dt
+        mean = sum(amplitudes) / len(amplitudes)
+        new_amplitudes = [2 * mean - amp for amp in amplitudes]
 
-        # Final animation to ensure the ball comes to rest
-        self.play(
-            ball.animate.move_to(ground.get_center() + (ball.get_center() - ground.get_center())[0] * RIGHT + UP * ball.radius),
-            shadow.animate.move_to(ground.get_center() + (ball.get_center() - ground.get_center())[0] * RIGHT),
-            run_time=0.1
-        )
+        new_bars = VGroup()
+        for i, (bar, amp) in enumerate(zip(bars, new_amplitudes)):
+            color = GREEN if amp > 0 else RED
+            new_bar = Rectangle(
+                height=abs(amp), width=0.5, fill_color=color, fill_opacity=1, stroke_color=WHITE
+            ).move_to(bar.get_center())
+            if amp < 0:
+                new_bar.shift((abs(amp) / 2 + bar.get_height() / 2) * DOWN)
+            new_bars.add(new_bar)
+
+        self.play(Transform(bars, new_bars))
+        amplitudes = new_amplitudes
+        self.wait(1)
+        self.play(FadeOut(diffusion_label))
+        self.wait(0.5)
+
+        # Step 4: Measurement (collapse probabilities)
+        measurement_label = Text("Measurement (collapse to one state)").scale(0.8).to_edge(UP)
+        self.play(Write(measurement_label))
+        self.wait(0.5)
+
+        # Normalize the probabilities (just for visuals)
+        probabilities = [abs(amp)**2 for amp in amplitudes]
+        normalized_probabilities = [prob / sum(probabilities) for prob in probabilities]
+
+        # Pick a state randomly based on probabilities (for animation, use max probability)
+        chosen_index = np.argmax(normalized_probabilities)
+        chosen_state = bars[chosen_index]
+
+        # Highlight the chosen state (with a star)
+        star = Star(n=5, color=YELLOW).scale(0.5).next_to(chosen_state, UP, buff=0.1)
+        self.play(FadeIn(star))
+        self.wait(1)
 
 
 if __name__ == "__main__":
-    scene = BouncingBall()
+    scene = GroversAlgorithm()
     scene.render()
