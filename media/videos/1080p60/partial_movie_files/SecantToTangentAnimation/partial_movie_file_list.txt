@@ -1,0 +1,4 @@
+# This file is used internally by FFMPEG.
+file 'file:D:/autoManim/media/videos/1080p60/partial_movie_files/SecantToTangentAnimation/3977891868_3662907667_223132457.mp4'
+file 'file:D:/autoManim/media/videos/1080p60/partial_movie_files/SecantToTangentAnimation/2852726489_2026236402_1666454454.mp4'
+file 'file:D:/autoManim/media/videos/1080p60/partial_movie_files/SecantToTangentAnimation/2852726489_199336120_4253698923.mp4'

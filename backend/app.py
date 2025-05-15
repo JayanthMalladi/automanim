@@ -89,8 +89,12 @@ def generate():
             logger.error("No prompt provided in generate endpoint")
             return jsonify({'error': 'No prompt provided'}), 400
             
-        logger.info(f"Processing prompt: {prompt[:50]}...")
-        code = generate_manim_code(prompt)
+        # Get conversation history, if any
+        conversation_history = data.get('conversation_history', [])
+        logger.info(f"Processing prompt with conversation history ({len(conversation_history)} messages)")
+            
+        # Pass conversation history to the generator
+        code = generate_manim_code(prompt, conversation_history)
         processing_time = time.time() - start_time
         logger.info(f"Successfully generated code in {processing_time:.2f} seconds")
         

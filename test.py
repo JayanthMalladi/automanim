@@ -1,133 +1,82 @@
 from manim import *
 
 
-class GroversAlgorithm(Scene):
+class EmbeddingAnimation(Scene):
     def construct(self):
-        # Define the states and their initial amplitudes
-        states = ["|00⟩", "|01⟩", "|10⟩", "|11⟩"]
-        initial_amplitudes = [1/2, 1/2, 1/2, 1/2]
-        amplitudes = initial_amplitudes.copy()
+        # Define words and their corresponding vectors
+        words = ["The", "quick", "brown", "fox"]
+        vectors = [(1, 1, 0), (2, 3, 1), (-1, 2, 2), (3, -1, 2)]
 
-        # Create initial state bars with labels
-        bars = VGroup(*[Rectangle(height=amp, width=0.5, fill_color=GREEN, fill_opacity=1, stroke_color=WHITE)
-                        for amp in initial_amplitudes])
-        labels = VGroup(*[Text(state).scale(0.5) for state in states])
-        labels.next_to(bars, DOWN, buff=0.1)
+        # Create 3D axes
+        axes = ThreeDAxes(
+            x_range=[-4, 4, 1],
+            y_range=[-4, 4, 1],
+            z_range=[-4, 4, 1],
+            axis_config={"color": BLUE},
+        )
+        axes.scale(0.8)
 
-        # Position the bars and labels
-        bars.arrange(RIGHT, buff=1.5)
-        bars.move_to(ORIGIN)
-        labels.move_to(bars.get_center() + 0.6 * DOWN)
+        # Add labels for axes
+        x_label = axes.get_x_axis_label("x", edge=RIGHT, direction=RIGHT)
+        y_label = axes.get_y_axis_label("y", edge=UP, direction=UP)
+        z_label = axes.get_z_axis_label("z", edge=OUT, direction=OUT)
+        labels = VGroup(x_label, y_label, z_label)
 
-        # Write the initial state
-        self.play(Create(bars), Write(labels))
-        self.wait(1)
+        # Initialize word objects and vector objects
+        word_objects = VGroup(*[Tex(word).scale(1.5) for word in words])
+        word_objects.arrange(DOWN, aligned_edge=LEFT, buff=1.0)
+        word_objects.to_edge(LEFT)
 
-        # Step 1: Apply the oracle (flip the amplitude of |11⟩)
-        oracle_label = Text("Oracle (flips |11⟩)").scale(0.8).to_edge(UP)
-        self.play(Write(oracle_label))
-        self.wait(0.5)
+        vector_objects = [None] * len(vectors)
+        arrow_objects = [None] * len(vectors)
+        vector_dots = [None] * len(vectors)
 
-        # Find the target bar (|11⟩ is the 4th bar; index 3)
-        target_bar = bars[3]
-        new_target_bar = Rectangle(
-            height=-amplitudes[3], width=0.5, fill_color=RED, fill_opacity=1, stroke_color=WHITE
-        ).move_to(target_bar.get_center())
-        amplitudes[3] *= -1
+        # General animation settings
+        self.play(Create(axes), Write(labels))
+        self.play(Write(word_objects))
+        self.wait()
 
-        self.play(Transform(target_bar, new_target_bar))
-        self.wait(1)
-        self.play(FadeOut(oracle_label))
-        self.wait(0.5)
+        # Animate each word being transformed into a vector
+        for i, (word, vector) in enumerate(zip(words, vectors)):
+            # Highlight the current word
+            word_object = word_objects[i]
+            self.play(Indicate(word_object, scale_factor=1.2, color=YELLOW))
+            self.play(word_object.animate.set_color(YELLOW))
+            self.wait()
 
-        # Step 2: Apply the diffusion operator (reflect around mean)
-        diffusion_label = Text("Diffusion (reflect around mean)").scale(0.8).to_edge(UP)
-        self.play(Write(diffusion_label))
-        self.wait(0.5)
+            # Compute the vector and its components
+            vector_obj = Vector(vector, color=YELLOW).shift(axes.c2p(0, 0, 0))
+            vector_obj.set_opacity(0.5)
+            vector_objects[i] = vector_obj
+            vector_dot = Dot(axes.c2p(*vector), color=YELLOW)
+            vector_dots[i] = vector_dot
 
-        # Compute the mean amplitude and new amplitudes after reflection
-        mean = sum(amplitudes) / len(amplitudes)
-        new_amplitudes = [2 * mean - amp for amp in amplitudes]
+            # Draw an arrow from the word to the vector
+            arrow = CurvedArrow(word_object.get_right(), vector_dot.get_center(), color=YELLOW)
+            arrow_objects[i] = arrow
 
-        # Create new bars to reflect the amplitudes
-        new_bars = VGroup()
-        new_positions = bars.get_center()
-        for i, (bar, amp) in enumerate(zip(bars, new_amplitudes)):
-            color = GREEN if amp > 0 else RED
-            new_bar = Rectangle(
-                height=abs(amp), width=0.5, fill_color=color, fill_opacity=1, stroke_color=WHITE
-            ).move_to(bar.get_center())
-            if amp < 0:
-                new_bar.shift((abs(amp) / 2 + bar.get_height() / 2) * DOWN)
-            new_bars.add(new_bar)
+            # Animate the arrow appearing and the vector moving to its position
+            self.play(GrowArrow(arrow))
+            self.play(GrowArrow(vector_obj))
+            self.play(Transform(vector_obj, vector_obj.copy().set_opacity(1.0)), FadeIn(vector_dot))
+            self.wait()
 
-        self.play(Transform(bars, new_bars))
-        amplitudes = new_amplitudes
-        self.wait(1)
-        self.play(FadeOut(diffusion_label))
-        self.wait(0.5)
+            # Fade out the arrow to reduce clutter
+            self.play(FadeOut(arrow))
+            self.wait()
 
-        # Step 3: Repeat the oracle and diffusion (second iteration)
-        # Oracle
-        oracle_label = Text("Oracle (flips |11⟩ again)").scale(0.8).to_edge(UP)
-        self.play(Write(oracle_label))
-        self.wait(0.5)
-        target_bar = bars[3]
-        new_target_bar = Rectangle(
-            height=-amplitudes[3], width=0.5, fill_color=GREEN if -amplitudes[3] > 0 else RED,
-            fill_opacity=1, stroke_color=WHITE
-        ).move_to(target_bar.get_center())
-        if -amplitudes[3] < 0:
-            new_target_bar.shift((abs(amplitudes[3]) / 2 + target_bar.get_height() / 2) * DOWN)
-        amplitudes[3] *= -1
-        self.play(Transform(target_bar, new_target_bar))
-        self.wait(1)
-        self.play(FadeOut(oracle_label))
-        self.wait(0.5)
+        # Connect the vectors to form a sequence
+        path = VMobject()
+        path.set_points_smoothly([axes.c2p(*vector) for vector in vectors])
 
-        # Diffusion
-        diffusion_label = Text("Diffusion (reflect around mean again)").scale(0.8).to_edge(UP)
-        self.play(Write(diffusion_label))
-        self.wait(0.5)
+        path_group = VGroup(*vector_objects, *vector_dots)
+        self.play(MoveAlongPath(path_group, path, run_time=4, rate_func=linear))
+        self.wait()
 
-        mean = sum(amplitudes) / len(amplitudes)
-        new_amplitudes = [2 * mean - amp for amp in amplitudes]
-
-        new_bars = VGroup()
-        for i, (bar, amp) in enumerate(zip(bars, new_amplitudes)):
-            color = GREEN if amp > 0 else RED
-            new_bar = Rectangle(
-                height=abs(amp), width=0.5, fill_color=color, fill_opacity=1, stroke_color=WHITE
-            ).move_to(bar.get_center())
-            if amp < 0:
-                new_bar.shift((abs(amp) / 2 + bar.get_height() / 2) * DOWN)
-            new_bars.add(new_bar)
-
-        self.play(Transform(bars, new_bars))
-        amplitudes = new_amplitudes
-        self.wait(1)
-        self.play(FadeOut(diffusion_label))
-        self.wait(0.5)
-
-        # Step 4: Measurement (collapse probabilities)
-        measurement_label = Text("Measurement (collapse to one state)").scale(0.8).to_edge(UP)
-        self.play(Write(measurement_label))
-        self.wait(0.5)
-
-        # Normalize the probabilities (just for visuals)
-        probabilities = [abs(amp)**2 for amp in amplitudes]
-        normalized_probabilities = [prob / sum(probabilities) for prob in probabilities]
-
-        # Pick a state randomly based on probabilities (for animation, use max probability)
-        chosen_index = np.argmax(normalized_probabilities)
-        chosen_state = bars[chosen_index]
-
-        # Highlight the chosen state (with a star)
-        star = Star(n=5, color=YELLOW).scale(0.5).next_to(chosen_state, UP, buff=0.1)
-        self.play(FadeIn(star))
-        self.wait(1)
+        # Fade out everything
+        self.play(*[FadeOut(mob) for mob in self.mobjects])
 
 
 if __name__ == "__main__":
-    scene = GroversAlgorithm()
+    scene = EmbeddingAnimation()
     scene.render()

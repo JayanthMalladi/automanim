@@ -40,7 +40,7 @@ def get_llm():
             raise
     return _llm_instance
 
-def generate_manim_code(prompt):
+def generate_manim_code(prompt, conversation_history=None):
     try:
         # Trim prompt if it's too long
         if len(prompt) > 5000:
@@ -97,9 +97,30 @@ Follow these instructions meticulously to ensure your Manim code is syntacticall
 **Note**: If you find that certain concepts require complex code, generate one animation at a time, focusing on clarity over completeness. Do not overcomplicate the code unless explicitly requested.
 """
         systemMessage = SystemMessagePromptTemplate.from_template(system_template)
+        
+        messages = [systemMessage]
+        
+        # Add conversation history if provided
+        if conversation_history and len(conversation_history) > 0:
+            logger.info(f"Using conversation history with {len(conversation_history)} messages")
+            for msg in conversation_history:
+                if msg["type"] == "user":
+                    messages.append(HumanMessagePromptTemplate.from_template(
+                        f"User's previous request: {msg['content']}"
+                    ))
+                elif msg["type"] == "assistant":
+                    # For assistant messages, we'll add them as system messages to maintain context
+                    messages.append(SystemMessagePromptTemplate.from_template(
+                        f"Your previous code generation: {msg['content']}"
+                    ))
+        
+        # Add the current prompt as the final human message
         human_template = "Question : {question}"
         human_message = HumanMessagePromptTemplate.from_template(human_template)
-        chat_prompt = ChatPromptTemplate.from_messages([systemMessage, human_message])
+        messages.append(human_message)
+        
+        # Create the chat prompt with all messages
+        chat_prompt = ChatPromptTemplate.from_messages(messages)
 
         # Use the lazily loaded LLM
         llm = get_llm()
