@@ -19,8 +19,8 @@ load_dotenv()
 # Get API credentials from environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-prover-v2:free")
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "deepseek/deepseek-prover-v2:free")  # Fallback model
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "meta-llama/llama-4-maverick:free")
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "meta-llama/llama-4-maverick:free")  # Fallback model
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "180"))
 
