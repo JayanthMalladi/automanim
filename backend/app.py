@@ -5,9 +5,6 @@ import logging
 import time
 import gc
 import psutil
-import threading
-from datetime import datetime, timedelta
-from collections import defaultdict
 from llm_generator import generate_manim_code, improve_prompt, force_gc, log_memory_usage
 
 app = Flask(__name__)
@@ -22,37 +19,9 @@ logger = logging.getLogger(__name__)
 request_count = 0
 active_requests = 0
 
-# User rate limiting - track when each user last made a request
-user_last_request = defaultdict(lambda: datetime.min)
-COOLDOWN_SECONDS = 120  # Time in seconds before a user can make another request
-
-def get_user_id():
-    """Get a unique identifier for the current user"""
-    # IP address is a basic way to identify users
-    return request.remote_addr or request.headers.get('X-Forwarded-For', 'unknown')
-
 @app.before_request
 def before_request():
-    """Log memory usage before each request and check for rate limiting"""
-    # Skip rate limiting for non-API routes
-    if not request.path.startswith('/api/improve_prompt') and not request.path.startswith('/api/generate'):
-        return
-    
-    # Check if the user is on cooldown
-    user_id = get_user_id()
-    last_request_time = user_last_request[user_id]
-    time_since_last = datetime.now() - last_request_time
-    
-    if time_since_last < timedelta(seconds=COOLDOWN_SECONDS):
-        time_remaining = COOLDOWN_SECONDS - time_since_last.total_seconds()
-        logger.info(f"Rate limit hit for user {user_id}. {time_remaining:.0f} seconds remaining.")
-        return jsonify({
-            'error': 'Rate limit exceeded',
-            'message': f'Please wait {time_remaining:.0f} seconds before making another request',
-            'time_remaining': int(time_remaining)
-        }), 429
-        
-    # Proceed with the request if no rate limiting issues
+    """Log memory usage before each request"""
     global request_count, active_requests
     request_count += 1
     active_requests += 1
@@ -66,13 +35,6 @@ def before_request():
 @app.after_request
 def after_request(response):
     """Log request duration and memory usage after each request"""
-    # Only update the last request time for API endpoints that need rate limiting
-    if request.path.startswith('/api/improve_prompt') or request.path.startswith('/api/generate'):
-        # Update the last request time for the user
-        user_id = get_user_id()
-        user_last_request[user_id] = datetime.now()
-    
-    # Standard logging and cleanup
     global active_requests
     active_requests -= 1
     logger.info(f"Request completed. Active requests: {active_requests}")
@@ -109,12 +71,6 @@ def improve_prompt_route():
         logger.info(f"improve_prompt processed in {process_time:.2f} seconds")
         log_memory_usage()
         
-        # Hide the thinking process by only returning the final result
-        if "##" in improved_prompt:
-            # If there's a section marker, only return content after the last ##
-            sections = improved_prompt.split("##")
-            improved_prompt = sections[-1].strip()
-        
         return jsonify({'improved_prompt': improved_prompt})
     
     except Exception as e:
@@ -147,15 +103,6 @@ def generate():
         process_time = time.time() - start_time
         logger.info(f"Generation processed in {process_time:.2f} seconds")
         log_memory_usage()
-        
-        # Hide the thinking process by ensuring we only show the final code
-        # Remove any comments that might be part of the thinking process
-        if "# Thinking:" in manim_code:
-            manim_code = manim_code.split("# Thinking:")[0].strip()
-        
-        # Strip any markdown formatting that might remain
-        if "```python" in manim_code:
-            manim_code = manim_code.replace("```python", "").replace("```", "").strip()
         
         return jsonify({'manim_code': manim_code})
     
@@ -192,29 +139,8 @@ def stats():
         'total_requests': request_count,
         'threads': len(process.threads()),
         'open_files': len(process.open_files()),
-        'connections': len(process.connections()),
-        'active_users': len(user_last_request)
+        'connections': len(process.connections())
     })
-
-# Cooldown status endpoint
-@app.route('/api/cooldown_status', methods=['GET'])
-def cooldown_status():
-    """Check if a user is on cooldown and how much time remains"""
-    user_id = get_user_id()
-    last_request_time = user_last_request[user_id]
-    time_since_last = datetime.now() - last_request_time
-    
-    if time_since_last < timedelta(seconds=COOLDOWN_SECONDS):
-        time_remaining = COOLDOWN_SECONDS - time_since_last.total_seconds()
-        return jsonify({
-            'on_cooldown': True,
-            'time_remaining': int(time_remaining)
-        })
-    else:
-        return jsonify({
-            'on_cooldown': False,
-            'time_remaining': 0
-        })
 
 if __name__ == '__main__':
     # Force garbage collection at startup

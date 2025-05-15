@@ -60,26 +60,72 @@ def get_openai_client():
             raise
     return _openai_client
 
-def clean_thinking_output(text):
-    """Remove thinking process and intermediate steps from the output"""
-    # Remove any lines containing "thinking" markers
-    clean_text = re.sub(r'(?i)# ?thinking:?.*?(\n|$)', '', text)
+def extract_final_answer(text):
+    """Extract only the final answer from the reasoning model's output.
+    This function strips out the thinking process and returns only the final result."""
     
-    # Remove any lines with intermediate reasoning
-    clean_text = re.sub(r'(?i)# ?reasoning:?.*?(\n|$)', '', clean_text)
-    clean_text = re.sub(r'(?i)# ?step:?.*?(\n|$)', '', clean_text)
+    logger.info(f"Extracting final answer from text of length {len(text)}")
     
-    # If there are markdown code blocks, extract only the code
-    if "```python" in clean_text:
-        code_blocks = re.findall(r'```python(.*?)```', clean_text, re.DOTALL)
-        if code_blocks:
-            clean_text = code_blocks[0].strip()
+    # Look for code blocks first - most reliable way to extract code
+    # Simple pattern that's less likely to cause issues with PowerShell
+    if "```python" in text and "```" in text:
+        # Find the last code block
+        start_pos = text.rfind("```python")
+        if start_pos == -1:  # Try without language specifier
+            start_pos = text.rfind("```")
+        
+        if start_pos != -1:
+            # Move past the backticks and language identifier
+            if text[start_pos:start_pos+8] == "```python":
+                content_start = start_pos + 8
+            else:
+                content_start = start_pos + 3
+                
+            # Find the end of this code block
+            end_pos = text.find("```", content_start)
+            if end_pos != -1:
+                code_block = text[content_start:end_pos].strip()
+                logger.info(f"Found code block of length {len(code_block)}")
+                return code_block
     
-    # Remove explanatory text at beginning and end
-    clean_text = re.sub(r'^.*?(?=from manim import|import manim)', '', clean_text, flags=re.DOTALL)
-    clean_text = re.sub(r'(?<=if __name__ == "__main__".*render\(\)).*$', '', clean_text, flags=re.DOTALL)
+    # If no code blocks or extraction failed, try to find sections that look like the final answer
+    # Common patterns in reasoning models output
+    answer_markers = ["Final Answer:", "Final Code:", "Final Result:", "Here's the code:"]
+    for marker in answer_markers:
+        if marker in text:
+            pos = text.rfind(marker)
+            if pos != -1:
+                answer = text[pos + len(marker):].strip()
+                logger.info(f"Found answer after marker '{marker}'")
+                return answer
     
-    return clean_text.strip()
+    # Look for common reasoning model output patterns
+    if "Let's generate the code" in text or "I'll generate the code" in text:
+        # Find the last occurrence of these phrases
+        pos1 = text.rfind("Let's generate the code")
+        pos2 = text.rfind("I'll generate the code")
+        pos = max(pos1, pos2)
+        
+        if pos != -1:
+            # Find the next period after this phrase
+            next_period = text.find(".", pos)
+            if next_period != -1:
+                answer = text[next_period + 1:].strip()
+                logger.info(f"Found answer after generation phrase")
+                return answer
+    
+    # If all else fails, look for the largest paragraph at the end
+    paragraphs = text.split("\n\n")
+    if paragraphs:
+        # Get the last substantial paragraph
+        for p in reversed(paragraphs):
+            if len(p.strip()) > 100:
+                logger.info(f"Using last substantial paragraph as answer")
+                return p.strip()
+    
+    # If no patterns matched, return the entire text as a fallback
+    logger.info("No clear final answer pattern found, returning full text")
+    return text
 
 def generate_manim_code(prompt):
     """Generate Manim code using direct OpenAI API calls to avoid LangChain memory issues"""
@@ -166,7 +212,11 @@ Follow these instructions meticulously to ensure your Manim code is syntacticall
                     content = chunk.choices[0].delta.content
                     accumulated_response += content
             
-            result = accumulated_response
+            # Extract the final code from the model's output, removing thinking process
+            full_response = accumulated_response
+            result = extract_final_answer(full_response)
+            
+            logger.info(f"Final result length: {len(result)} chars (from full response of {len(full_response)} chars)")
             
         except Exception as api_error:
             logger.error(f"Error during OpenAI API call: {str(api_error)}")
@@ -178,9 +228,6 @@ Follow these instructions meticulously to ensure your Manim code is syntacticall
             result = result[len("```python"):].strip()
         if result.endswith("```"):
             result = result[:-3].strip()
-        
-        # Clean out any thinking process
-        result = clean_thinking_output(result)
         
         # Force garbage collection
         force_gc()
@@ -259,25 +306,16 @@ As an assistant specializing in creating Manim 2D math animation code, your role
                     content = chunk.choices[0].delta.content
                     accumulated_response += content
             
-            improved = accumulated_response
+            # Extract the final improved prompt from the model's output, removing thinking process
+            full_response = accumulated_response
+            improved = extract_final_answer(full_response)
+            
+            logger.info(f"Final improved prompt length: {len(improved)} chars (from full response of {len(full_response)} chars)")
             
         except Exception as api_error:
             logger.error(f"Error during OpenAI API call for prompt improvement: {str(api_error)}")
             logger.error(traceback.format_exc())
             improved = f"Error improving prompt: {str(api_error)}. Please try again with a simpler description."
-        
-        # Remove any thinking markers from the improved prompt
-        improved = re.sub(r'(?i)#+ ?thinking:?.*?(\n|$)', '', improved)
-        improved = re.sub(r'(?i)#+ ?reasoning:?.*?(\n|$)', '', improved)
-        
-        # If there are section headings with ##, only keep the final output
-        if "##" in improved:
-            sections = improved.split("##")
-            # Get the last non-empty section
-            for section in reversed(sections):
-                if section.strip():
-                    improved = section.strip()
-                    break
         
         # Force garbage collection
         force_gc()
