@@ -3,8 +3,8 @@ services:
     name: automanim-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 600 --workers=1 --threads=4 --worker-class=gthread --max-requests 10 --max-requests-jitter 5 --log-level info
-    plan: standard # Use a higher tier plan with more resources
+    startCommand: gunicorn app:app --timeout 120 --workers=1 --threads=2 --worker-class=gevent --max-requests 5 --max-requests-jitter 2 --graceful-timeout 60 --keep-alive 5 --log-level info
+    plan: pro # Upgrade to pro plan for more resources
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
@@ -15,8 +15,14 @@ services:
       - key: WEB_CONCURRENCY
         value: 1
       - key: PYTHON_MAX_THREADS
-        value: 4
+        value: 2
       - key: MALLOC_TRIM_THRESHOLD_
-        value: 131072 # Memory allocation optimization
+        value: 65536 # More aggressive memory trimming (64KB)
       - key: PYTHONMALLOC
-        value: malloc 
+        value: malloc
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: MAX_REQUEST_SIZE
+        value: "3000"
+      - key: MAX_RESPONSE_SIZE
+        value: "50000" 
